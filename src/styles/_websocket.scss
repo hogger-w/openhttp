@@ -1,0 +1,125 @@
+.blank-workbench {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 14px;
+  height: 100%;
+  color: var(--text-muted);
+}
+
+.blank-workbench h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+}
+
+.ws-panel {
+  gap: 0;
+  padding-bottom: 20px;
+}
+
+.ws-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 88px;
+  min-height: 38px;
+  border: 1px solid color-mix(in srgb, #7557c2 40%, var(--border));
+  border-radius: 7px;
+  color: #6042a6;
+  background: color-mix(in srgb, #7557c2 13%, var(--panel));
+  font-weight: 800;
+}
+
+.ws-protocols {
+  padding: 0 22px;
+}
+
+.socket-status-line {
+  padding: 16px 22px 0;
+}
+
+.socket-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--panel-soft);
+  font-weight: 800;
+}
+
+.socket-status.open {
+  color: #0f6f5d;
+  background: #dff4eb;
+}
+
+.socket-status.connecting {
+  color: #8b5200;
+  background: #fff2d7;
+}
+
+.socket-status.error {
+  color: #a9363d;
+  background: #ffe3e1;
+}
+
+.socket-messages {
+  min-height: 0;
+}
+
+.message-stream {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 22px;
+}
+
+.socket-message {
+  display: grid;
+  grid-template-columns: 78px 56px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.socket-message .message-time {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.socket-message strong {
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.socket-message.in strong {
+  color: #0f6f5d;
+}
+
+.socket-message.out strong {
+  color: #2557a7;
+}
+
+.socket-message.error strong {
+  color: var(--danger);
+}
+
+.message-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px;
+  gap: 10px;
+  padding: 12px 22px 18px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel-soft);
+}
+
+.message-composer textarea {
+  min-height: 72px;
+  max-height: 120px;
+  resize: vertical;
+}

@@ -1,0 +1,725 @@
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const fs = require("node:fs/promises");
+const path = require("node:path");
+
+const ENV_FILE_NAME = ".openhttp.env.json";
+const HTTP_FILE_SUFFIX = ".http";
+const LEGACY_REQUEST_FILE_SUFFIX = ".openhttp.json";
+const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+
+app.commandLine.appendSwitch("disable-web-security");
+app.commandLine.appendSwitch("allow-running-insecure-content");
+
+let mainWindow;
+const isSmokeTest = process.env.OPENHTTP_SMOKE === "1";
+let verifySslCertificates = true;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1380,
+    height: 920,
+    minWidth: 1040,
+    minHeight: 720,
+    title: "OpenHTTP",
+    frame: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#f5f3ef",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: false,
+      allowRunningInsecureContent: true
+    }
+  });
+
+  Menu.setApplicationMenu(null);
+
+  const emitWindowState = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    mainWindow.webContents.send("window:maximized-change", mainWindow.isMaximized());
+  };
+
+  mainWindow.on("maximize", emitWindowState);
+  mainWindow.on("unmaximize", emitWindowState);
+
+  if (app.isPackaged || isSmokeTest) {
+    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+  } else {
+    mainWindow.loadURL("http://127.0.0.1:5173");
+    if (process.env.OPENHTTP_DEVTOOLS === "1") {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
+  }
+
+  if (isSmokeTest) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      console.log("OPENHTTP_SMOKE_OK");
+      setTimeout(() => app.quit(), 200);
+    });
+
+    mainWindow.webContents.once("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+      console.error(`OPENHTTP_SMOKE_FAILED ${errorCode} ${errorDescription} ${validatedURL}`);
+      app.exit(1);
+    });
+  }
+}
+
+app.whenReady().then(() => {
+  createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on("certificate-error", (event, _webContents, _url, _error, _certificate, callback) => {
+  if (!verifySslCertificates) {
+    event.preventDefault();
+    callback(true);
+    return;
+  }
+
+  callback(false);
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+function ensureInsideWorkspace(workspacePath, targetPath) {
+  const workspaceRoot = path.resolve(workspacePath);
+  const resolvedTarget = path.resolve(targetPath);
+  const relative = path.relative(workspaceRoot, resolvedTarget);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Target path is outside of the selected workspace.");
+  }
+}
+
+function slugify(value) {
+  const fallback = "request";
+  const slug = String(value || fallback)
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+
+  return slug || fallback;
+}
+
+function collectionFileName(workspaceRoot, folder) {
+  const folderName = folder ? path.basename(folder) : path.basename(workspaceRoot);
+  return `${slugify(folderName)}${HTTP_FILE_SUFFIX}`;
+}
+
+function collectionRelativePath(workspaceRoot, folder) {
+  return (folder ? `${folder}/${collectionFileName(workspaceRoot, folder)}` : collectionFileName(workspaceRoot, folder)).replaceAll("\\", "/");
+}
+
+function collectionFullPath(workspaceRoot, folder) {
+  return path.join(workspaceRoot, folder || "", collectionFileName(workspaceRoot, folder));
+}
+
+function folderFullPath(workspaceRoot, folder) {
+  return path.join(workspaceRoot, folder || "");
+}
+
+async function nextAvailableFolderPath(workspaceRoot, folder) {
+  if (!folder) {
+    throw new Error("The workspace root folder cannot be copied.");
+  }
+
+  const sourcePath = folderFullPath(workspaceRoot, folder);
+  const parentPath = path.dirname(sourcePath);
+  const baseName = `${path.basename(sourcePath)} Copy`;
+  let attempt = 0;
+
+  while (true) {
+    const candidate = path.join(parentPath, attempt === 0 ? baseName : `${baseName} ${attempt + 1}`);
+    ensureInsideWorkspace(workspaceRoot, candidate);
+
+    try {
+      await fs.access(candidate);
+      attempt += 1;
+    } catch {
+      return candidate;
+    }
+  }
+}
+
+function requestMarkerId(request) {
+  if (request.markerId) {
+    return String(request.markerId);
+  }
+
+  const raw = String(request.id || "");
+  const marker = raw.includes("#") ? raw.slice(raw.lastIndexOf("#") + 1) : raw;
+  return marker && !marker.startsWith("draft-") ? marker : cryptoRandomId();
+}
+
+function cryptoRandomId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeRequest(raw, relativePath, folder = "") {
+  const type = raw.type === "websocket" ? "websocket" : "http";
+  const basename = path.basename(relativePath, HTTP_FILE_SUFFIX);
+  const markerId = raw.markerId || requestMarkerId(raw);
+  const id = `${relativePath}#${markerId}`;
+
+  if (type === "websocket") {
+    return {
+      id,
+      markerId,
+      version: 1,
+      type,
+      name: raw.name || basename || "WebSocket Request",
+      folder,
+      relativePath,
+      fileName: path.basename(relativePath),
+      url: raw.url || "ws://127.0.0.1:8080",
+      protocols: raw.protocols || "",
+      notes: raw.notes || "",
+      createdAt: raw.createdAt || new Date().toISOString(),
+      updatedAt: raw.updatedAt || raw.createdAt || new Date().toISOString()
+    };
+  }
+
+  return {
+    id,
+    markerId,
+    version: 1,
+    type,
+    name: raw.name || basename || "HTTP Request",
+    folder,
+    relativePath,
+    fileName: path.basename(relativePath),
+    method: raw.method || "GET",
+    url: raw.url || "http://127.0.0.1:8080",
+    params: Array.isArray(raw.params) ? raw.params : [],
+    headers: Array.isArray(raw.headers) ? raw.headers : [],
+    body: {
+      mode: raw.body?.mode || "raw",
+      rawType: raw.body?.rawType || "json",
+      raw: raw.body?.raw || "",
+      contentType: raw.body?.contentType || "",
+      formData: Array.isArray(raw.body?.formData) ? raw.body.formData : [],
+      urlencoded: Array.isArray(raw.body?.urlencoded) ? raw.body.urlencoded : []
+    },
+    notes: raw.notes || "",
+    createdAt: raw.createdAt || new Date().toISOString(),
+    updatedAt: raw.updatedAt || raw.createdAt || new Date().toISOString()
+  };
+}
+
+function parseHeaderRows(lines) {
+  return lines
+    .map((line) => {
+      const separatorIndex = line.indexOf(":");
+      if (separatorIndex === -1) {
+        return null;
+      }
+
+      return {
+        key: line.slice(0, separatorIndex).trim(),
+        value: line.slice(separatorIndex + 1).trim(),
+        enabled: true
+      };
+    })
+    .filter(Boolean);
+}
+
+function parseHttpCollection(content, relativePath, folder) {
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  const segments = [];
+  let current = [];
+
+  lines.forEach((line) => {
+    if (/^\s*###/.test(line) && current.some((item) => item.trim())) {
+      segments.push(current);
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  });
+
+  if (current.some((item) => item.trim())) {
+    segments.push(current);
+  }
+
+  return segments
+    .map((segment, index) => parseHttpSegment(segment, relativePath, folder, index))
+    .filter(Boolean);
+}
+
+function parseHttpSegment(segment, relativePath, folder, index) {
+  const lines = [...segment];
+  let name = "";
+  let markerId = "";
+  let openHttpBody = null;
+
+  while (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+
+  if (lines[0]?.trim().startsWith("###")) {
+    name = lines.shift().trim().replace(/^###\s*/, "").trim();
+  }
+
+  while (lines.length) {
+    const line = lines[0].trim();
+    const nameMatch = line.match(/^#\s*@name\s+(.+)$/i);
+    const idMatch = line.match(/^#\s*@id\s+(.+)$/i);
+
+    if (nameMatch) {
+      if (!name) {
+        name = nameMatch[1].trim();
+      }
+      lines.shift();
+      continue;
+    }
+
+    if (idMatch) {
+      markerId = idMatch[1].trim();
+      lines.shift();
+      continue;
+    }
+
+    const bodyMatch = line.match(/^#\s*@openhttp-body\s+(.+)$/i);
+    if (bodyMatch) {
+      try {
+        openHttpBody = JSON.parse(bodyMatch[1]);
+      } catch {
+        openHttpBody = null;
+      }
+      lines.shift();
+      continue;
+    }
+
+    if (!line || line.startsWith("#") || line.startsWith("//")) {
+      lines.shift();
+      continue;
+    }
+
+    break;
+  }
+
+  const requestLine = lines.shift()?.trim();
+  if (!requestLine) {
+    return null;
+  }
+
+  const headerLines = [];
+  while (lines.length) {
+    const line = lines.shift();
+    if (line === undefined || !line.trim()) {
+      break;
+    }
+    headerLines.push(line);
+  }
+
+  const body = lines.join("\n").replace(/\n+$/g, "");
+  const headers = parseHeaderRows(headerLines);
+  const contentType = headers.find((header) => header.key.toLowerCase() === "content-type")?.value || "";
+  const marker = markerId || cryptoRandomId();
+
+  if (/^WEBSOCKET\s+/i.test(requestLine)) {
+    const url = requestLine.replace(/^WEBSOCKET\s+/i, "").trim();
+    const protocols = headers.find((header) => header.key.toLowerCase() === "sec-websocket-protocol")?.value || "";
+    return normalizeRequest(
+      {
+        markerId: marker,
+        type: "websocket",
+        name: name || `WebSocket Request ${index + 1}`,
+        url,
+        protocols
+      },
+      relativePath,
+      folder
+    );
+  }
+
+  const [methodCandidate, ...urlParts] = requestLine.split(/\s+/);
+  const method = methodCandidate.toUpperCase();
+
+  if (!httpMethods.has(method)) {
+    return null;
+  }
+
+  const url = urlParts.join(" ").replace(/\s+HTTP\/\d(?:\.\d)?$/i, "").trim();
+
+  return normalizeRequest(
+    {
+      markerId: marker,
+      type: "http",
+      name: name || `${method} Request ${index + 1}`,
+      method,
+      url,
+      headers,
+      params: [],
+      body: {
+        mode: "raw",
+        rawType: contentType.includes("xml") ? "xml" : contentType.includes("json") ? "json" : "text",
+        raw: body,
+        contentType,
+        ...(openHttpBody || {})
+      }
+    },
+    relativePath,
+    folder
+  );
+}
+
+function requestUrlWithParams(request) {
+  if (request.type !== "http" || !Array.isArray(request.params) || request.params.length === 0) {
+    return request.url || "";
+  }
+
+  const enabledParams = request.params.filter((param) => param.enabled && String(param.key || "").trim());
+  if (enabledParams.length === 0) {
+    return request.url || "";
+  }
+
+  const separator = String(request.url || "").includes("?") ? "&" : "?";
+  const query = enabledParams
+    .map((param) => `${encodeURIComponent(String(param.key).trim())}=${encodeURIComponent(String(param.value || ""))}`)
+    .join("&");
+
+  return `${request.url || ""}${separator}${query}`;
+}
+
+function serializeHttpRequest(request, relativePath) {
+  const markerId = requestMarkerId(request);
+  const lines = [`### ${request.name || "Untitled Request"}`, `# @name ${slugify(request.name || "request")}`, `# @id ${markerId}`];
+  if (request.type === "http" && request.body && request.body.mode !== "raw") {
+    lines.push(`# @openhttp-body ${JSON.stringify(request.body)}`);
+  }
+
+  if (request.type === "websocket") {
+    lines.push(`WEBSOCKET ${request.url || ""}`);
+    if (request.protocols) {
+      lines.push(`Sec-WebSocket-Protocol: ${request.protocols}`);
+    }
+    return lines.join("\n");
+  }
+
+  lines.push(`${request.method || "GET"} ${requestUrlWithParams(request)}`);
+
+  const headers = Array.isArray(request.headers) ? request.headers.filter((header) => header.enabled !== false && header.key) : [];
+  const hasContentType = headers.some((header) => String(header.key).toLowerCase() === "content-type");
+  headers.forEach((header) => {
+    lines.push(`${header.key}: ${header.value || ""}`);
+  });
+
+  if (request.body?.contentType && !hasContentType) {
+    lines.push(`Content-Type: ${request.body.contentType}`);
+  }
+
+  if (request.body?.mode === "urlencoded" && Array.isArray(request.body.urlencoded)) {
+    const encoded = request.body.urlencoded
+      .filter((row) => row.enabled !== false && row.key)
+      .map((row) => `${encodeURIComponent(row.key)}=${encodeURIComponent(row.value || "")}`)
+      .join("&");
+    if (encoded) {
+      lines.push("", encoded);
+    }
+  } else if (request.body?.mode === "raw" && request.body?.raw) {
+    lines.push("", request.body.raw);
+  }
+
+  return lines.join("\n");
+}
+
+function serializeHttpCollection(requests, relativePath) {
+  return `${requests.map((request) => serializeHttpRequest(request, relativePath)).join("\n\n")}\n`;
+}
+
+async function readCollectionFile(workspaceRoot, folder, relativePath) {
+  const filePath = path.join(workspaceRoot, relativePath);
+  try {
+    return parseHttpCollection(await fs.readFile(filePath, "utf8"), relativePath, folder);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeEnvironment(raw, folder) {
+  const variables = Array.isArray(raw.variables)
+    ? raw.variables.map((variable) => ({
+        id: variable.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        key: String(variable.key || ""),
+        value: String(variable.value || ""),
+        active: Boolean(variable.active)
+      }))
+    : [];
+
+  return {
+    version: 1,
+    folder,
+    relativePath: folder ? `${folder}/${ENV_FILE_NAME}` : ENV_FILE_NAME,
+    variables,
+    updatedAt: raw.updatedAt || new Date().toISOString()
+  };
+}
+
+async function readOrCreateEnvironment(workspaceRoot, folder) {
+  const folderPath = folder ? path.join(workspaceRoot, folder) : workspaceRoot;
+  const envPath = path.join(folderPath, ENV_FILE_NAME);
+  const relativePath = folder ? `${folder}/${ENV_FILE_NAME}` : ENV_FILE_NAME;
+
+  try {
+    const raw = JSON.parse(await fs.readFile(envPath, "utf8"));
+    return normalizeEnvironment({ ...raw, relativePath }, folder);
+  } catch {
+    const environment = normalizeEnvironment({ variables: [] }, folder);
+    await fs.writeFile(envPath, `${JSON.stringify(environment, null, 2)}\n`, "utf8");
+    return environment;
+  }
+}
+
+async function readWorkspace(workspacePath) {
+  const workspaceRoot = path.resolve(workspacePath);
+  const stats = await fs.stat(workspaceRoot);
+
+  if (!stats.isDirectory()) {
+    throw new Error("Workspace path is not a directory.");
+  }
+
+  const requests = [];
+  const folderSet = new Set([""]);
+  const environments = {};
+
+  async function visit(directory) {
+    const folder = path.relative(workspaceRoot, directory).replaceAll(path.sep, "/");
+    const normalizedFolder = folder === "." ? "" : folder;
+    folderSet.add(normalizedFolder);
+    environments[normalizedFolder] = await readOrCreateEnvironment(workspaceRoot, normalizedFolder);
+
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    const hasHttpCollection = entries.some((entry) => entry.isFile() && entry.name.endsWith(HTTP_FILE_SUFFIX));
+
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name === ".git") {
+        continue;
+      }
+
+      const fullPath = path.join(directory, entry.name);
+
+      if (entry.isDirectory()) {
+        await visit(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const relativePath = path.relative(workspaceRoot, fullPath).replaceAll(path.sep, "/");
+      const requestFolder = path.dirname(relativePath) === "." ? "" : path.dirname(relativePath).replaceAll("\\", "/");
+
+      if (entry.name.endsWith(HTTP_FILE_SUFFIX)) {
+        const parsedRequests = parseHttpCollection(await fs.readFile(fullPath, "utf8"), relativePath, requestFolder);
+        requests.push(...parsedRequests);
+        continue;
+      }
+
+      if (!hasHttpCollection && entry.name.endsWith(LEGACY_REQUEST_FILE_SUFFIX)) {
+        try {
+          const raw = JSON.parse(await fs.readFile(fullPath, "utf8"));
+          requests.push(normalizeRequest(raw, relativePath, requestFolder));
+        } catch {
+          // Invalid legacy request files are ignored during migration.
+        }
+      }
+    }
+  }
+
+  await visit(workspaceRoot);
+
+  return {
+    path: workspaceRoot,
+    name: path.basename(workspaceRoot),
+    folders: Array.from(folderSet).sort((a, b) => a.localeCompare(b)),
+    environments,
+    requests
+  };
+}
+
+ipcMain.handle("workspace:open", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Open Local Collection Folder",
+    properties: ["openDirectory", "createDirectory"]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return readWorkspace(result.filePaths[0]);
+});
+
+ipcMain.handle("workspace:read", async (_event, workspacePath) => {
+  return readWorkspace(workspacePath);
+});
+
+ipcMain.handle("request:save", async (_event, workspacePath, request) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const folder = request.folder || "";
+  const relativePath = request.relativePath && request.relativePath.endsWith(HTTP_FILE_SUFFIX)
+    ? request.relativePath
+    : collectionRelativePath(workspaceRoot, folder);
+  const targetPath = path.join(workspaceRoot, relativePath);
+
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+  const existingRequests = await readCollectionFile(workspaceRoot, folder, relativePath);
+  const normalized = normalizeRequest(
+    {
+      ...request,
+      updatedAt: new Date().toISOString(),
+      createdAt: request.createdAt || new Date().toISOString()
+    },
+    relativePath,
+    folder
+  );
+  const shouldUpdateExisting = Boolean(request.id && existingRequests.some((existingRequest) => existingRequest.id === request.id));
+  const nextRequests = shouldUpdateExisting
+    ? existingRequests.map((existingRequest) => (existingRequest.id === request.id ? normalized : existingRequest))
+    : [...existingRequests, normalized];
+
+  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath), "utf8");
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("request:delete", async (_event, workspacePath, request) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const folder = request.folder || "";
+  const relativePath = request.relativePath && request.relativePath.endsWith(HTTP_FILE_SUFFIX)
+    ? request.relativePath
+    : collectionRelativePath(workspaceRoot, folder);
+  const targetPath = path.join(workspaceRoot, relativePath);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+
+  const existingRequests = await readCollectionFile(workspaceRoot, folder, relativePath);
+  const nextRequests = existingRequests.filter((existingRequest) => existingRequest.id !== request.id);
+  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath), "utf8");
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("environment:save", async (_event, workspacePath, environment) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const folder = environment.folder || "";
+  const targetPath = path.join(workspaceRoot, folder, ENV_FILE_NAME);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+
+  const activeByKey = new Set();
+  const normalized = normalizeEnvironment(
+    {
+      ...environment,
+      variables: (environment.variables || []).map((variable) => {
+        const key = String(variable.key || "").trim();
+        const canStayActive = variable.active && key && !activeByKey.has(key);
+
+        if (canStayActive) {
+          activeByKey.add(key);
+        }
+
+        return {
+          ...variable,
+          key,
+          active: canStayActive
+        };
+      }),
+      updatedAt: new Date().toISOString()
+    },
+    folder
+  );
+
+  await fs.writeFile(targetPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("folder:open-location", async (_event, workspacePath, folder) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const targetPath = folderFullPath(workspaceRoot, folder || "");
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  await shell.openPath(targetPath);
+});
+
+ipcMain.handle("folder:copy", async (_event, workspacePath, folder) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const sourcePath = folderFullPath(workspaceRoot, folder || "");
+  ensureInsideWorkspace(workspaceRoot, sourcePath);
+
+  const targetPath = await nextAvailableFolderPath(workspaceRoot, folder || "");
+  await fs.cp(sourcePath, targetPath, {
+    recursive: true,
+    filter: (source) => path.resolve(source) !== path.resolve(targetPath)
+  });
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("folder:delete", async (_event, workspacePath, folder) => {
+  if (!folder) {
+    throw new Error("The workspace root folder cannot be deleted.");
+  }
+
+  const workspaceRoot = path.resolve(workspacePath);
+  const targetPath = folderFullPath(workspaceRoot, folder);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  await fs.rm(targetPath, { recursive: true, force: true });
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("folder:create", async (_event, workspacePath, parentFolder, name) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const safeName = slugify(name || "New Folder");
+  const targetPath = path.join(workspaceRoot, parentFolder || "", safeName);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  await fs.mkdir(targetPath, { recursive: false });
+  return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("settings:set-verify-ssl", (_event, value) => {
+  verifySslCertificates = Boolean(value);
+  return verifySslCertificates;
+});
+
+ipcMain.handle("window:minimize", () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.handle("window:toggle-maximize", () => {
+  if (!mainWindow) {
+    return false;
+  }
+
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow.maximize();
+  }
+
+  return mainWindow.isMaximized();
+});
+
+ipcMain.handle("window:close", () => {
+  mainWindow?.close();
+});
+
+ipcMain.handle("window:is-maximized", () => {
+  return Boolean(mainWindow?.isMaximized());
+});

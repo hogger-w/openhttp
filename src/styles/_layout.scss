@@ -1,0 +1,140 @@
+.app-shell {
+  display: flex;
+  width: 100vw;
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 260px;
+  max-width: 520px;
+  height: 100%;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar);
+  color: var(--text);
+}
+
+.app-shell > .sidebar:not(.tools-sidebar) {
+  border-right: 0;
+}
+
+.sidebar-actions,
+.create-actions {
+  display: flex;
+  gap: 8px;
+  padding: 14px 14px 0;
+}
+
+.sidebar-actions .button,
+.create-actions .button {
+  flex: 1;
+}
+
+.button,
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--panel);
+  white-space: nowrap;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
+}
+
+.button:hover,
+.icon-button:hover {
+  border-color: color-mix(in srgb, var(--border) 55%, var(--text));
+  background: var(--panel-soft);
+}
+
+.button:active,
+.icon-button:active {
+  transform: translateY(1px);
+}
+
+.button.primary {
+  border-color: var(--accent);
+  color: #211d18;
+  background: var(--accent);
+  font-weight: 760;
+}
+
+.button.primary:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+
+.button.soft {
+  min-height: 31px;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.button.send {
+  min-width: 92px;
+  border-color: var(--success);
+  color: #ffffff;
+  background: var(--success);
+  font-weight: 760;
+}
+
+.button.danger-fill {
+  min-width: 118px;
+  border-color: var(--danger);
+  color: #ffffff;
+  background: var(--danger);
+  font-weight: 760;
+}
+
+.icon-button {
+  width: 34px;
+  padding: 0;
+}
+
+.icon-button.danger {
+  color: var(--danger);
+}
+
+.icon-button.ghost {
+  width: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 14px;
+  padding: 0 10px;
+  min-height: 35px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-soft);
+  background: var(--input);
+}
+
+.search-box input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  color: var(--text);
+  background: transparent;
+}
+
+.search-box input::placeholder {
+  color: var(--text-soft);
+}

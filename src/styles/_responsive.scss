@@ -1,0 +1,68 @@
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 920px) {
+  .sidebar {
+    width: 282px !important;
+  }
+
+  .url-row {
+    flex-wrap: wrap;
+  }
+
+  .method-select,
+  .ws-badge {
+    width: 98px;
+  }
+
+  .url-input {
+    flex-basis: calc(100% - 106px);
+  }
+
+  .button.send,
+  .button.danger-fill {
+    flex: 1 1 100%;
+  }
+
+  .request-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .request-name-line {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .folder-breadcrumb {
+    max-width: 100%;
+  }
+
+  .request-name {
+    width: 100%;
+  }
+
+  .variable-hints {
+    padding-left: 22px;
+  }
+
+  .playground-grid,
+  .cron-builder {
+    grid-template-columns: 1fr;
+  }
+
+  .json-editor {
+    grid-template-columns: 58px minmax(0, 1fr);
+  }
+
+  .codec-actions-vertical {
+    justify-content: stretch;
+  }
+
+  .codec-actions-vertical .button {
+    flex: 1 1 180px;
+  }
+}
