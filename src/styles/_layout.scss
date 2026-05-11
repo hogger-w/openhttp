@@ -84,10 +84,26 @@
 
 .button.send {
   min-width: 92px;
-  border-color: var(--success);
+  border-color: #0d7f73;
   color: #ffffff;
-  background: var(--success);
+  background: #0f8f84;
   font-weight: 760;
+}
+
+.button.send:hover {
+  border-color: #096d64;
+  background: #0b7a70;
+}
+
+.button.send.cancel {
+  border-color: #c47716;
+  color: #ffffff;
+  background: #d8841f;
+}
+
+.button.send.cancel:hover {
+  border-color: #ad6410;
+  background: #be6e16;
 }
 
 .button.danger-fill {

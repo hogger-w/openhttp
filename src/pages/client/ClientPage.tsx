@@ -3,7 +3,7 @@ import { Activity, Check, FolderOpen, Plus, RefreshCw, Save, Search, Trash2 } fr
 import { FolderTree } from "../../features/sidebar/FolderTree";
 import { RequestTabs } from "../../features/tabs/RequestTabs";
 import { EnvironmentWorkbench, FolderBreadcrumb, HttpWorkbench, WebSocketWorkbench } from "../../features/workbench/RequestWorkbench";
-import type { AppPage, ContextMenuState, FolderNode, FormFileMap, RequestTab, WorkbenchView } from "../../shared/appTypes";
+import type { AppPage, ContextMenuState, FolderNode, FormFileMap, RequestTab, WorkbenchTab, WorkbenchView } from "../../shared/appTypes";
 import type {
   EnvironmentConfig,
   EnvironmentVariable,
@@ -25,11 +25,11 @@ type ClientPageProps = {
   selectedRequestId: string | null;
   selectedEnvironmentFolder: string | null;
   activeView: WorkbenchView;
-  activeTab: RequestTab | null;
+  activeTab: WorkbenchTab | null;
   draft: RequestDraft | null;
   activeEnvironment?: EnvironmentConfig;
   expandedFolders: Set<string>;
-  openTabs: RequestTab[];
+  openTabs: WorkbenchTab[];
   activeTabId: string | null;
   dirtyTabIds: Set<string>;
   environmentDraft: EnvironmentConfig | null;
@@ -214,9 +214,9 @@ export function ClientPage({
             closeSocket();
             setSaveSuccess(false);
             const nextTab = openTabs.find((tab) => tab.id === tabId);
-            setSelectedFolder(nextTab?.draft.folder || "");
+            setSelectedFolder(nextTab?.kind === "environment" ? nextTab.environment.folder : nextTab?.draft.folder || "");
             setActivePage("client");
-            setActiveView({ type: "request" });
+            setActiveView(nextTab?.kind === "environment" ? { type: "environment", folder: nextTab.environment.folder } : { type: "request" });
             setActiveTabId(tabId);
           }}
           onClose={closeTab}
@@ -232,7 +232,7 @@ export function ClientPage({
             onRemoveVariable={removeEnvironmentVariable}
             onSave={saveEnvironment}
           />
-        ) : activeView.type === "request" && activeTab && draft ? (
+        ) : activeView.type === "request" && activeTab?.kind === "request" && draft ? (
           <>
             <header className="request-header">
               <div className="request-name-line">

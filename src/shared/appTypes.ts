@@ -1,4 +1,4 @@
-import type { RequestDraft, ResponseState } from "../types";
+import type { EnvironmentConfig, RequestDraft, ResponseState } from "../types";
 
 export type AppPage = "client" | "tools";
 export type WorkbenchView = { type: "empty" } | { type: "request" } | { type: "environment"; folder: string };
@@ -14,9 +14,14 @@ export type CloseDirtyTabsDialogState = {
   dirtyCount: number;
 };
 
+export type CreateFolderDialogState = {
+  parentFolder: string;
+};
+
 export type FormFileMap = Record<string, File[]>;
 
 export type RequestTab = {
+  kind: "request";
   id: string;
   draft: RequestDraft;
   savedSnapshot: string;
@@ -25,6 +30,15 @@ export type RequestTab = {
   response: ResponseState | null;
   requestError: string | null;
 };
+
+export type EnvironmentTab = {
+  kind: "environment";
+  id: string;
+  environment: EnvironmentConfig;
+  savedSnapshot: string;
+};
+
+export type WorkbenchTab = RequestTab | EnvironmentTab;
 
 export type FolderNode = {
   path: string;

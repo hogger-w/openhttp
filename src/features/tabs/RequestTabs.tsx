@@ -1,5 +1,5 @@
-import { X } from "lucide-react";
-import type { ContextMenuState, RequestTab } from "../../shared/appTypes";
+import { Database, X } from "lucide-react";
+import type { ContextMenuState, WorkbenchTab } from "../../shared/appTypes";
 
 export function RequestTabs({
   tabs,
@@ -9,7 +9,7 @@ export function RequestTabs({
   onClose,
   onOpenContextMenu
 }: {
-  tabs: RequestTab[];
+  tabs: WorkbenchTab[];
   activeTabId: string | null;
   dirtyTabIds: Set<string>;
   onActivate: (tabId: string) => void;
@@ -36,38 +36,51 @@ export function RequestTabs({
         }
       }}
     >
-      {tabs.map((tab) => (
-        <div
-          role="button"
-          tabIndex={0}
-          data-tab-id={tab.id}
-          className={`request-tab ${activeTabId === tab.id ? "active" : ""}`}
-          key={tab.id}
-          onClick={() => onActivate(tab.id)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              onActivate(tab.id);
-            }
-          }}
-          title={tab.draft.name}
-        >
-          {dirtyTabIds.has(tab.id) && <span className="tab-dirty-indicator" title="Unsaved changes" />}
-          <span className={`tab-kind ${tab.draft.type === "websocket" ? "ws" : tab.draft.method.toLowerCase()}`}>
-            {tab.draft.type === "websocket" ? "WS" : tab.draft.method}
-          </span>
-          <span className="tab-title">{tab.draft.name}</span>
-          <button
-            className="tab-close"
-            onClick={(event) => {
-              event.stopPropagation();
-              onClose(tab.id);
+      {tabs.map((tab) => {
+        const folder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder;
+        const folderName = folder ? folder.split("/").at(-1) || folder : "";
+        const title = tab.kind === "request" ? tab.draft.name : folderName ? `${folderName} Environment` : "Environment";
+
+        return (
+          <div
+            role="button"
+            tabIndex={0}
+            data-tab-id={tab.id}
+            className={`request-tab ${activeTabId === tab.id ? "active" : ""}`}
+            key={tab.id}
+            onClick={() => onActivate(tab.id)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                onActivate(tab.id);
+              }
             }}
-            title="Close tab"
+            title={folder ? `${title} - ${folder}` : title}
           >
-            <X size={13} />
-          </button>
-        </div>
-      ))}
+            {dirtyTabIds.has(tab.id) && <span className="tab-dirty-indicator" title="Unsaved changes" />}
+            {tab.kind === "request" ? (
+              <span className={`tab-kind ${tab.draft.type === "websocket" ? "ws" : tab.draft.method.toLowerCase()}`}>
+                {tab.draft.type === "websocket" ? "WS" : tab.draft.method}
+              </span>
+            ) : (
+              <span className="tab-kind env">
+                <Database size={12} />
+                ENV
+              </span>
+            )}
+            <span className="tab-title">{title}</span>
+            <button
+              className="tab-close"
+              onClick={(event) => {
+                event.stopPropagation();
+                onClose(tab.id);
+              }}
+              title="Close tab"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

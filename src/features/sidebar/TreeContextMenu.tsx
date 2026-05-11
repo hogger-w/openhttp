@@ -34,15 +34,15 @@ export function TreeContextMenu({
       <div className="row-menu floating-menu" ref={refObject} style={style}>
         <button onClick={() => onCreateRequest("http", menu.folder)}>
           <Plus size={14} />
-          添加HTTP
+          Add HTTP
         </button>
         <button onClick={() => onCreateRequest("websocket", menu.folder)}>
           <Wifi size={14} />
-          添加WebSocket
+          Add WebSocket
         </button>
         <button onClick={() => onCreateFolder(menu.folder)}>
           <Folder size={14} />
-          创建文件夹
+          New Folder
         </button>
       </div>
     );
@@ -53,15 +53,15 @@ export function TreeContextMenu({
       <div className="row-menu floating-menu" ref={refObject} style={style}>
         <button onClick={() => onCloseAllTabs()}>
           <X size={14} />
-          关闭所有
+          Close All
         </button>
         <button onClick={() => onCloseTab(menu.tabId)}>
           <X size={14} />
-          关闭
+          Close
         </button>
         <button onClick={() => onCloseOtherTabs(menu.tabId)}>
           <X size={14} />
-          关闭其他
+          Close Others
         </button>
       </div>
     );
@@ -71,11 +71,11 @@ export function TreeContextMenu({
     <div className="row-menu floating-menu" ref={refObject} style={style}>
       <button onClick={() => onDuplicateRequest(menu.request)}>
         <Copy size={14} />
-        复制
+        Duplicate
       </button>
       <button className="danger" onClick={() => onDeleteRequest(menu.request)}>
         <Trash2 size={14} />
-        删除
+        Delete
       </button>
     </div>
   );

@@ -2,6 +2,11 @@
 
 import type { EnvironmentConfig, RequestDraft, WorkspaceState } from "./types";
 
+type CreateFolderResult = {
+  workspace: WorkspaceState;
+  createdFolder: string;
+};
+
 export {};
 
 declare global {
@@ -15,7 +20,7 @@ declare global {
       openFolderLocation: (workspacePath: string, folder: string) => Promise<void>;
       copyFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
       deleteFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
-      createFolder: (workspacePath: string, parentFolder: string, name: string) => Promise<WorkspaceState>;
+      createFolder: (workspacePath: string, parentFolder: string, name: string) => Promise<CreateFolderResult>;
       setVerifySsl: (value: boolean) => Promise<boolean>;
       minimizeWindow: () => Promise<void>;
       toggleMaximizeWindow: () => Promise<boolean>;

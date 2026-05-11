@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SettingsModal } from "./features/settings/SettingsModal";
+import { CreateFolderDialog } from "./features/sidebar/CreateFolderDialog";
 import { buildFolderTree } from "./features/sidebar/folderTreeUtils";
 import { TreeContextMenu } from "./features/sidebar/TreeContextMenu";
 import { CloseDirtyTabsDialog } from "./features/tabs/CloseDirtyTabsDialog";
@@ -25,6 +26,8 @@ import {
   createHttpRequest,
   createWebSocketRequest,
   emptyEnvVariable,
+  environmentKey,
+  environmentSnapshot,
   folderKey,
   isTabDirty,
   normalizeDraftForEdit,
@@ -39,10 +42,11 @@ import type {
   AppPage,
   CloseDirtyTabsDialogState,
   ContextMenuState,
+  CreateFolderDialogState,
   FormFileMap,
-  RequestTab,
   SettingsSection,
   ToolId,
+  WorkbenchTab,
   WorkbenchView
 } from "./shared/appTypes";
 import { bodylessMethods, rootFolderId } from "./shared/constants";
@@ -57,6 +61,43 @@ import type {
   WorkspaceState
 } from "./types";
 
+function hasOwnPatchValue<T extends object>(patch: T, key: keyof T) {
+  return Object.prototype.hasOwnProperty.call(patch, key);
+}
+
+function applyEnvironmentVariablePatch(
+  environment: EnvironmentConfig,
+  id: string | undefined,
+  patch: Partial<EnvironmentVariable>
+): EnvironmentConfig {
+  let variables = environment.variables.map((variable) => (variable.id === id ? { ...variable, ...patch } : variable));
+  const edited = variables.find((variable) => variable.id === id);
+
+  if (!edited) {
+    return { ...environment, variables };
+  }
+
+  const shouldNormalizeActiveKey =
+    (hasOwnPatchValue(patch, "active") && Boolean(patch.active)) || (hasOwnPatchValue(patch, "key") && edited.active);
+
+  if (!shouldNormalizeActiveKey) {
+    return { ...environment, variables };
+  }
+
+  const editedKey = edited.key.trim();
+
+  if (!editedKey) {
+    variables = variables.map((variable) => (variable.id === id ? { ...variable, active: false } : variable));
+    return { ...environment, variables };
+  }
+
+  variables = variables.map((variable) =>
+    variable.id !== id && variable.key.trim() === editedKey ? { ...variable, active: false } : variable
+  );
+
+  return { ...environment, variables };
+}
+
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [activePage, setActivePage] = useState<AppPage>("client");
@@ -64,10 +105,9 @@ function App() {
   const [selectedFolder, setSelectedFolder] = useState("");
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set([rootFolderId]));
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [openTabs, setOpenTabs] = useState<RequestTab[]>([]);
+  const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [formFiles, setFormFiles] = useState<FormFileMap>({});
-  const [environmentDraft, setEnvironmentDraft] = useState<EnvironmentConfig | null>(null);
   const [filter, setFilter] = useState("");
   const [leftWidth, setLeftWidth] = useState(318);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
@@ -85,14 +125,21 @@ function App() {
   const [isMaximized, setIsMaximized] = useState(false);
   const [activeTool, setActiveTool] = useState<ToolId>("base64");
   const [closeDirtyTabsDialog, setCloseDirtyTabsDialog] = useState<CloseDirtyTabsDialogState | null>(null);
+  const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const httpAbortControllerRef = useRef<AbortController | null>(null);
   const draggingRef = useRef(false);
   const titleMenuRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const closeDirtyTabsResolverRef = useRef<((shouldSave: boolean) => void) | null>(null);
+  const environmentSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const environmentSaveVersionRef = useRef(0);
 
   const activeTab = useMemo(() => openTabs.find((tab) => tab.id === activeTabId) || null, [activeTabId, openTabs]);
-  const draft = activeTab?.draft || null;
+  const activeRequestTab = activeTab?.kind === "request" ? activeTab : null;
+  const activeEnvironmentTab = activeTab?.kind === "environment" ? activeTab : null;
+  const draft = activeRequestTab?.draft || null;
+  const environmentDraft = activeEnvironmentTab?.environment || null;
 
   useEffect(() => {
     const recentWorkspace = localStorage.getItem("openhttp:last-workspace");
@@ -151,6 +198,7 @@ function App() {
 
   useEffect(() => {
     return () => {
+      httpAbortControllerRef.current?.abort();
       socketRef.current?.close();
     };
   }, []);
@@ -187,18 +235,6 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, []);
-
-  useEffect(() => {
-    if (activeView.type !== "environment" || !workspace) {
-      setEnvironmentDraft(null);
-      return;
-    }
-
-    const environment = workspace.environments[activeView.folder];
-    if (environment) {
-      setEnvironmentDraft(normalizeEnvironmentForEdit(environment));
-    }
-  }, [activeView, workspace]);
 
   const filteredRequests = useMemo(() => {
     if (!workspace) {
@@ -282,7 +318,8 @@ function App() {
         return current;
       }
 
-      const nextTab: RequestTab = {
+      const nextTab: WorkbenchTab = {
+        kind: "request",
         id,
         draft: draftForEdit,
         savedSnapshot: requestSnapshot(draftForEdit),
@@ -316,25 +353,46 @@ function App() {
       return;
     }
 
-    const name = window.prompt("Folder name", "New Folder");
-    if (!name?.trim()) {
-      setContextMenu(null);
+    setContextMenu(null);
+    setCreateFolderDialog({ parentFolder });
+  };
+
+  const confirmCreateFolder = async (name: string) => {
+    if (!workspace || !createFolderDialog) {
       return;
     }
 
-    const nextWorkspace = await window.openHttpNative.createFolder(workspace.path, parentFolder, name.trim());
+    const { workspace: nextWorkspace, createdFolder } = await window.openHttpNative.createFolder(
+      workspace.path,
+      createFolderDialog.parentFolder,
+      name
+    );
+
     setWorkspace(nextWorkspace);
-    setSelectedFolder(parentFolder);
-    setExpandedFolders((current) => new Set(current).add(folderKey(parentFolder)));
-    setContextMenu(null);
+    setSelectedFolder(createdFolder);
+    setActiveTabId(null);
+    setActiveView({ type: "empty" });
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      next.add(folderKey(createFolderDialog.parentFolder));
+      next.add(folderKey(createdFolder));
+      return next;
+    });
+    setCreateFolderDialog(null);
   };
 
-  const updateActiveTab = (recipe: (tab: RequestTab) => RequestTab) => {
-    setOpenTabs((current) => current.map((tab) => (tab.id === activeTabId ? recipe({ ...tab, draft: cloneRequest(tab.draft) }) : tab)));
+  const updateActiveTab = (recipe: (tab: Extract<WorkbenchTab, { kind: "request" }>) => Extract<WorkbenchTab, { kind: "request" }>) => {
+    setOpenTabs((current) =>
+      current.map((tab) =>
+        tab.id === activeTabId && tab.kind === "request" ? recipe({ ...tab, draft: cloneRequest(tab.draft) }) : tab
+      )
+    );
   };
 
-  const updateTabById = (tabId: string, recipe: (tab: RequestTab) => RequestTab) => {
-    setOpenTabs((current) => current.map((tab) => (tab.id === tabId ? recipe({ ...tab, draft: cloneRequest(tab.draft) }) : tab)));
+  const updateTabById = (tabId: string, recipe: (tab: Extract<WorkbenchTab, { kind: "request" }>) => Extract<WorkbenchTab, { kind: "request" }>) => {
+    setOpenTabs((current) =>
+      current.map((tab) => (tab.id === tabId && tab.kind === "request" ? recipe({ ...tab, draft: cloneRequest(tab.draft) }) : tab))
+    );
   };
 
   const updateActiveDraft = (recipe: (request: RequestDraft) => RequestDraft) => {
@@ -349,7 +407,7 @@ function App() {
     updateActiveDraft((request) => (request.type === "websocket" ? recipe(request) : request));
   };
 
-  const saveTab = async (tab: RequestTab) => {
+  const saveTab = async (tab: Extract<WorkbenchTab, { kind: "request" }>) => {
     if (!workspace) {
       return null;
     }
@@ -366,19 +424,30 @@ function App() {
     return saved ? normalizeDraftForEdit(saved) : null;
   };
 
+  async function saveWorkbenchTab(tab: WorkbenchTab) {
+    if (tab.kind === "request") {
+      return saveTab(tab);
+    }
+
+    await persistEnvironment(tab.environment);
+    return tab.environment;
+  }
+
   const saveActiveDraft = async () => {
-    if (!activeTab) {
+    if (!activeRequestTab) {
       return;
     }
 
-    const saved = await saveTab(activeTab);
+    const saved = await saveTab(activeRequestTab);
     if (!saved) {
       return;
     }
 
     const nextId = requestKey(saved);
     setOpenTabs((current) =>
-      current.map((tab) => (tab.id === activeTab.id ? { ...tab, id: nextId, draft: saved, savedSnapshot: requestSnapshot(saved) } : tab))
+      current.map((tab) =>
+        tab.id === activeRequestTab.id && tab.kind === "request" ? { ...tab, id: nextId, draft: saved, savedSnapshot: requestSnapshot(saved) } : tab
+      )
     );
     setActiveTabId(nextId);
     setSaveSuccess(true);
@@ -399,9 +468,13 @@ function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && activePage === "client" && activeView.type === "request") {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s" && activePage === "client") {
         event.preventDefault();
-        saveActiveDraft();
+        if (activeView.type === "environment") {
+          saveEnvironment();
+        } else if (activeView.type === "request") {
+          saveActiveDraft();
+        }
       }
     };
 
@@ -424,7 +497,7 @@ function App() {
       if (shouldSave) {
         try {
           for (const tab of dirtyTabs) {
-            await saveTab(tab);
+            await saveWorkbenchTab(tab);
           }
         } catch (error) {
           console.error("Failed to save tab while closing", error);
@@ -442,7 +515,10 @@ function App() {
       const baseIndex = activeIndex >= 0 ? activeIndex : firstClosedIndex;
       const nextActive = remaining[Math.max(0, baseIndex - 1)] || remaining[baseIndex] || remaining[0] || null;
       setActiveTabId(nextActive?.id || null);
-      setActiveView(nextActive ? { type: "request" } : { type: "empty" });
+      setSelectedFolder(nextActive?.kind === "environment" ? nextActive.environment.folder : nextActive?.draft.folder || "");
+      setActiveView(
+        nextActive ? (nextActive.kind === "environment" ? { type: "environment", folder: nextActive.environment.folder } : { type: "request" }) : { type: "empty" }
+      );
     }
 
     setOpenTabs(remaining);
@@ -461,7 +537,7 @@ function App() {
     const nextWorkspace = await window.openHttpNative.deleteRequest(workspace.path, request);
     setWorkspace(nextWorkspace);
     setContextMenu(null);
-    setOpenTabs((current) => current.filter((tab) => tab.draft.id !== request.id));
+    setOpenTabs((current) => current.filter((tab) => tab.kind !== "request" || tab.draft.id !== request.id));
     if (draft?.id === request.id) {
       setActiveTabId(null);
       setActiveView({ type: "empty" });
@@ -519,7 +595,12 @@ function App() {
 
     const nextWorkspace = await window.openHttpNative.deleteFolder(workspace.path, folder);
     setWorkspace(nextWorkspace);
-    setOpenTabs((current) => current.filter((tab) => tab.draft.folder !== folder && !tab.draft.folder?.startsWith(`${folder}/`)));
+    setOpenTabs((current) =>
+      current.filter((tab) => {
+        const tabFolder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder || "";
+        return tabFolder !== folder && !tabFolder.startsWith(`${folder}/`);
+      })
+    );
     setContextMenu(null);
     setSelectedFolder("");
     setActiveTabId(null);
@@ -532,10 +613,99 @@ function App() {
 
   const showEnvironment = (folder: string) => {
     closeSocket();
+    const environment = workspace?.environments[folder];
+
+    if (!environment) {
+      return;
+    }
+
+    const id = environmentKey(folder);
+    const environmentForEdit = normalizeEnvironmentForEdit(environment);
     setSelectedFolder(folder);
     setActivePage("client");
-    setActiveTabId(null);
+    setActiveTabId(id);
     setActiveView({ type: "environment", folder });
+
+    setOpenTabs((current) => {
+      const existing = current.find((tab) => tab.id === id);
+      if (existing) {
+        return current;
+      }
+
+      return [
+        ...current,
+        {
+          kind: "environment",
+          id,
+          environment: environmentForEdit,
+          savedSnapshot: environmentSnapshot(environmentForEdit)
+        }
+      ];
+    });
+  };
+
+  const persistEnvironment = (
+    environment: EnvironmentConfig,
+    options: { optimistic?: boolean; syncDraftOnComplete?: boolean } = {}
+  ) => {
+    if (!workspace) {
+      return Promise.resolve();
+    }
+
+    const workspacePath = workspace.path;
+    const folder = environment.folder;
+    const environmentForSave = compactEnvironment(environment);
+    const saveVersion = ++environmentSaveVersionRef.current;
+
+    if (options.optimistic) {
+      setWorkspace((current) =>
+        current && current.path === workspacePath
+          ? {
+              ...current,
+              environments: {
+                ...current.environments,
+                [folder]: environmentForSave
+              }
+            }
+          : current
+      );
+    }
+
+    const saveTask = environmentSaveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const nextWorkspace = await window.openHttpNative.saveEnvironment(workspacePath, environmentForSave);
+
+        if (saveVersion !== environmentSaveVersionRef.current || options.syncDraftOnComplete === false) {
+          return;
+        }
+
+        setWorkspace(nextWorkspace);
+        const savedEnvironment = nextWorkspace.environments[folder];
+        if (savedEnvironment) {
+          const environmentForEdit = normalizeEnvironmentForEdit(savedEnvironment);
+          setOpenTabs((current) =>
+            current.map((tab) =>
+              tab.kind === "environment" && tab.environment.folder === folder
+                ? {
+                    ...tab,
+                    id: environmentKey(folder),
+                    environment: environmentForEdit,
+                    savedSnapshot: environmentSnapshot(environmentForEdit)
+                  }
+                : tab
+            )
+          );
+        }
+      });
+
+    environmentSaveQueueRef.current = saveTask.catch((error) => {
+      if (saveVersion === environmentSaveVersionRef.current) {
+        console.error("Failed to save environment", error);
+      }
+    });
+
+    return environmentSaveQueueRef.current;
   };
 
   const saveEnvironment = async () => {
@@ -543,59 +713,62 @@ function App() {
       return;
     }
 
-    const nextWorkspace = await window.openHttpNative.saveEnvironment(workspace.path, compactEnvironment(environmentDraft));
-    setWorkspace(nextWorkspace);
-    setEnvironmentDraft(normalizeEnvironmentForEdit(nextWorkspace.environments[environmentDraft.folder]));
+    await persistEnvironment(environmentDraft);
   };
 
   const updateEnvironmentVariable = (id: string | undefined, patch: Partial<EnvironmentVariable>) => {
-    setEnvironmentDraft((current) => {
-      if (!current) {
-        return current;
-      }
+    if (!activeEnvironmentTab) {
+      return;
+    }
 
-      let nextVariables = current.variables.map((variable) => (variable.id === id ? { ...variable, ...patch } : variable));
-      const edited = nextVariables.find((variable) => variable.id === id);
+    const nextDraft = applyEnvironmentVariablePatch(activeEnvironmentTab.environment, id, patch);
+    const shouldSaveImmediately = hasOwnPatchValue(patch, "active");
+    setOpenTabs((current) =>
+      current.map((tab) =>
+        tab.id === activeEnvironmentTab.id && tab.kind === "environment"
+          ? {
+              ...tab,
+              environment: nextDraft,
+              savedSnapshot: shouldSaveImmediately ? environmentSnapshot(nextDraft) : tab.savedSnapshot
+            }
+          : tab
+      )
+    );
 
-      if (patch.active && edited?.key.trim()) {
-        nextVariables = nextVariables.map((variable) =>
-          variable.id !== id && variable.key.trim() === edited.key.trim() ? { ...variable, active: false } : variable
-        );
-      }
-
-      if (patch.key && edited?.active) {
-        let seenActive = false;
-        nextVariables = nextVariables.map((variable) => {
-          if (variable.key.trim() !== patch.key?.trim() || !variable.active) {
-            return variable;
-          }
-
-          if (!seenActive) {
-            seenActive = true;
-            return variable;
-          }
-
-          return { ...variable, active: false };
-        });
-      }
-
-      return { ...current, variables: nextVariables };
-    });
+    if (shouldSaveImmediately) {
+      void persistEnvironment(nextDraft, { optimistic: true, syncDraftOnComplete: false });
+    }
   };
 
   const addEnvironmentVariable = () => {
-    setEnvironmentDraft((current) => (current ? { ...current, variables: [...current.variables, emptyEnvVariable()] } : current));
+    if (!activeEnvironmentTab) {
+      return;
+    }
+
+    setOpenTabs((current) =>
+      current.map((tab) =>
+        tab.id === activeEnvironmentTab.id && tab.kind === "environment"
+          ? { ...tab, environment: { ...tab.environment, variables: [...tab.environment.variables, emptyEnvVariable()] } }
+          : tab
+      )
+    );
   };
 
   const removeEnvironmentVariable = (id: string | undefined) => {
-    setEnvironmentDraft((current) => {
-      if (!current) {
-        return current;
-      }
+    if (!activeEnvironmentTab) {
+      return;
+    }
 
-      const variables = current.variables.filter((variable) => variable.id !== id);
-      return { ...current, variables: variables.length ? variables : [emptyEnvVariable()] };
-    });
+    setOpenTabs((current) =>
+      current.map((tab) => {
+        if (tab.id !== activeEnvironmentTab.id || tab.kind !== "environment") {
+          return tab;
+        }
+
+        const variables = tab.environment.variables.filter((variable) => variable.id !== id);
+        return { ...tab, environment: { ...tab.environment, variables: variables.length ? variables : [emptyEnvVariable()] } };
+      })
+    );
   };
 
   const toggleFolder = (folder: string) => {
@@ -613,12 +786,19 @@ function App() {
   };
 
   const sendHttp = async () => {
-    if (!activeTab || !draft || draft.type !== "http" || isSending) {
+    if (isSending) {
+      httpAbortControllerRef.current?.abort();
       return;
     }
 
-    const sendingTabId = activeTab.id;
+    if (!activeRequestTab || !draft || draft.type !== "http") {
+      return;
+    }
+
+    const sendingTabId = activeRequestTab.id;
     const startedAt = performance.now();
+    const abortController = new AbortController();
+    httpAbortControllerRef.current = abortController;
     setIsSending(true);
     setSendStartedAt(startedAt);
     updateTabById(sendingTabId, (tab) => ({ ...tab, requestError: null, response: null }));
@@ -691,7 +871,8 @@ function App() {
         method: draft.method,
         headers,
         body: requestBody,
-        redirect: "follow"
+        redirect: "follow",
+        signal: abortController.signal
       });
       const contentType = result.headers.get("content-type") || "";
       const bodyKind = responseBodyKind(contentType);
@@ -786,11 +967,15 @@ function App() {
           : tab.response
       }));
     } catch (error) {
+      const isAbortError = error instanceof Error && error.name === "AbortError";
       updateTabById(sendingTabId, (tab) => ({
         ...tab,
-        requestError: error instanceof Error ? error.message : String(error)
+        requestError: isAbortError ? "Request canceled" : error instanceof Error ? error.message : String(error)
       }));
     } finally {
+      if (httpAbortControllerRef.current === abortController) {
+        httpAbortControllerRef.current = null;
+      }
       setIsSending(false);
       setSendStartedAt(null);
     }
@@ -1065,6 +1250,14 @@ function App() {
           dirtyCount={closeDirtyTabsDialog.dirtyCount}
           onDiscard={() => resolveCloseDirtyTabsDialog(false)}
           onSave={() => resolveCloseDirtyTabsDialog(true)}
+        />
+      )}
+
+      {createFolderDialog && (
+        <CreateFolderDialog
+          parentLabel={createFolderDialog.parentFolder || workspace?.name || "Workspace"}
+          onCancel={() => setCreateFolderDialog(null)}
+          onCreate={confirmCreateFolder}
         />
       )}
 

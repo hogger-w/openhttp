@@ -12,7 +12,6 @@ out/
 .env
 .env.*
 !.env.example
-.openhttp.env.json
 
 # Logs
 *.log
@@ -29,6 +28,7 @@ coverage/
 # Tool caches
 .vite/
 .cache/
+.tmp-electron-smoke/
 *.tsbuildinfo
 
 # OS files

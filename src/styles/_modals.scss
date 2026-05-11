@@ -36,6 +36,37 @@
   margin: 0;
 }
 
+.folder-name-field {
+  display: grid;
+  gap: 8px;
+}
+
+.folder-name-field span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.folder-name-field input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: 0;
+  padding: 0 10px;
+  color: var(--text);
+  background: var(--input);
+}
+
+.folder-name-field input:focus {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.modal-error {
+  margin-top: 10px !important;
+  color: var(--danger);
+}
+
 .confirm-modal-actions {
   display: flex;
   justify-content: flex-end;

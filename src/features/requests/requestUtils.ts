@@ -1,5 +1,5 @@
 import type { BodyFormDataRow, EnvironmentConfig, EnvironmentVariable, HttpRequest, KeyValueRow, RequestDraft, WebSocketRequest } from "../../types";
-import type { RequestTab } from "../../shared/appTypes";
+import type { WorkbenchTab } from "../../shared/appTypes";
 import { rootFolderId } from "../../shared/constants";
 
 export const emptyRow = (): KeyValueRow => ({
@@ -74,6 +74,10 @@ export function cloneEnvironment(environment: EnvironmentConfig): EnvironmentCon
 
 export function requestKey(request: RequestDraft) {
   return request.id || request.relativePath || crypto.randomUUID();
+}
+
+export function environmentKey(folder: string) {
+  return `environment:${folder || rootFolderId}`;
 }
 
 export function folderKey(folder: string) {
@@ -164,8 +168,14 @@ export function requestSnapshot(request: RequestDraft) {
   return JSON.stringify(compactRequest(request));
 }
 
-export function isTabDirty(tab: RequestTab) {
-  return requestSnapshot(tab.draft) !== tab.savedSnapshot;
+export function environmentSnapshot(environment: EnvironmentConfig) {
+  return JSON.stringify(compactEnvironment(environment));
+}
+
+export function isTabDirty(tab: WorkbenchTab) {
+  return tab.kind === "request"
+    ? requestSnapshot(tab.draft) !== tab.savedSnapshot
+    : environmentSnapshot(tab.environment) !== tab.savedSnapshot;
 }
 
 export function normalizeEnvironmentForEdit(environment: EnvironmentConfig): EnvironmentConfig {

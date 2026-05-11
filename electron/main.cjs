@@ -2,7 +2,6 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron")
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
-const ENV_FILE_NAME = ".openhttp.env.json";
 const HTTP_FILE_SUFFIX = ".http";
 const LEGACY_REQUEST_FILE_SUFFIX = ".openhttp.json";
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
@@ -135,6 +134,11 @@ function folderFullPath(workspaceRoot, folder) {
   return path.join(workspaceRoot, folder || "");
 }
 
+function relativeFolderPath(workspaceRoot, folderPath) {
+  const relative = path.relative(workspaceRoot, folderPath).replaceAll(path.sep, "/");
+  return relative === "." ? "" : relative;
+}
+
 async function nextAvailableFolderPath(workspaceRoot, folder) {
   if (!folder) {
     throw new Error("The workspace root folder cannot be copied.");
@@ -154,6 +158,32 @@ async function nextAvailableFolderPath(workspaceRoot, folder) {
       attempt += 1;
     } catch {
       return candidate;
+    }
+  }
+}
+
+async function createAvailableChildFolder(workspaceRoot, parentFolder, name) {
+  const safeName = slugify(name || "New Folder");
+  let attempt = 0;
+
+  while (true) {
+    const folderName = attempt === 0 ? safeName : `${safeName} ${attempt + 1}`;
+    const targetPath = path.join(workspaceRoot, parentFolder || "", folderName);
+    ensureInsideWorkspace(workspaceRoot, targetPath);
+
+    try {
+      await fs.mkdir(targetPath, { recursive: false });
+      return {
+        targetPath,
+        createdFolder: relativeFolderPath(workspaceRoot, targetPath)
+      };
+    } catch (error) {
+      if (error && error.code === "EEXIST") {
+        attempt += 1;
+        continue;
+      }
+
+      throw error;
     }
   }
 }
@@ -442,20 +472,71 @@ function serializeHttpRequest(request, relativePath) {
   return lines.join("\n");
 }
 
-function serializeHttpCollection(requests, relativePath) {
-  return `${requests.map((request) => serializeHttpRequest(request, relativePath)).join("\n\n")}\n`;
+function parseHttpEnvironment(content, relativePath, folder) {
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+
+  for (const line of lines) {
+    const match = line.trim().match(/^#\s*@openhttp-environment\s+(.+)$/i);
+    if (!match) {
+      continue;
+    }
+
+    try {
+      return normalizeEnvironment(JSON.parse(match[1]), folder, relativePath);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
 }
 
-async function readCollectionFile(workspaceRoot, folder, relativePath) {
+function serializeHttpEnvironment(environment) {
+  const payload = {
+    version: 1,
+    variables: Array.isArray(environment.variables)
+      ? environment.variables.map((variable) => ({
+          id: variable.id,
+          key: variable.key,
+          value: variable.value,
+          active: Boolean(variable.active)
+        }))
+      : [],
+    updatedAt: environment.updatedAt || new Date().toISOString()
+  };
+
+  return [`### Environment`, `# @openhttp-environment ${JSON.stringify(payload)}`].join("\n");
+}
+
+function serializeHttpCollection(requests, relativePath, environment = null) {
+  const segments = [];
+
+  if (environment) {
+    segments.push(serializeHttpEnvironment(environment));
+  }
+
+  segments.push(...requests.map((request) => serializeHttpRequest(request, relativePath)));
+  return `${segments.join("\n\n")}\n`;
+}
+
+async function readCollectionDocument(workspaceRoot, folder, relativePath) {
   const filePath = path.join(workspaceRoot, relativePath);
   try {
-    return parseHttpCollection(await fs.readFile(filePath, "utf8"), relativePath, folder);
+    const content = await fs.readFile(filePath, "utf8");
+    return {
+      requests: parseHttpCollection(content, relativePath, folder),
+      environment: parseHttpEnvironment(content, relativePath, folder)
+    };
   } catch {
-    return [];
+    return {
+      requests: [],
+      environment: null
+    };
   }
 }
 
-function normalizeEnvironment(raw, folder) {
+function normalizeEnvironment(raw, folder, relativePath = "") {
   const variables = Array.isArray(raw.variables)
     ? raw.variables.map((variable) => ({
         id: variable.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -468,25 +549,10 @@ function normalizeEnvironment(raw, folder) {
   return {
     version: 1,
     folder,
-    relativePath: folder ? `${folder}/${ENV_FILE_NAME}` : ENV_FILE_NAME,
+    relativePath: relativePath || raw.relativePath || "",
     variables,
     updatedAt: raw.updatedAt || new Date().toISOString()
   };
-}
-
-async function readOrCreateEnvironment(workspaceRoot, folder) {
-  const folderPath = folder ? path.join(workspaceRoot, folder) : workspaceRoot;
-  const envPath = path.join(folderPath, ENV_FILE_NAME);
-  const relativePath = folder ? `${folder}/${ENV_FILE_NAME}` : ENV_FILE_NAME;
-
-  try {
-    const raw = JSON.parse(await fs.readFile(envPath, "utf8"));
-    return normalizeEnvironment({ ...raw, relativePath }, folder);
-  } catch {
-    const environment = normalizeEnvironment({ variables: [] }, folder);
-    await fs.writeFile(envPath, `${JSON.stringify(environment, null, 2)}\n`, "utf8");
-    return environment;
-  }
 }
 
 async function readWorkspace(workspacePath) {
@@ -505,7 +571,6 @@ async function readWorkspace(workspacePath) {
     const folder = path.relative(workspaceRoot, directory).replaceAll(path.sep, "/");
     const normalizedFolder = folder === "." ? "" : folder;
     folderSet.add(normalizedFolder);
-    environments[normalizedFolder] = await readOrCreateEnvironment(workspaceRoot, normalizedFolder);
 
     const entries = await fs.readdir(directory, { withFileTypes: true });
     const hasHttpCollection = entries.some((entry) => entry.isFile() && entry.name.endsWith(HTTP_FILE_SUFFIX));
@@ -530,7 +595,19 @@ async function readWorkspace(workspacePath) {
       const requestFolder = path.dirname(relativePath) === "." ? "" : path.dirname(relativePath).replaceAll("\\", "/");
 
       if (entry.name.endsWith(HTTP_FILE_SUFFIX)) {
-        const parsedRequests = parseHttpCollection(await fs.readFile(fullPath, "utf8"), relativePath, requestFolder);
+        const content = await fs.readFile(fullPath, "utf8");
+        const parsedRequests = parseHttpCollection(content, relativePath, requestFolder);
+        const parsedEnvironment = parseHttpEnvironment(content, relativePath, requestFolder);
+        const canonicalRelativePath = collectionRelativePath(workspaceRoot, requestFolder);
+        const existingEnvironment = environments[requestFolder];
+
+        if (
+          parsedEnvironment &&
+          (!existingEnvironment || relativePath === canonicalRelativePath || existingEnvironment.relativePath !== canonicalRelativePath)
+        ) {
+          environments[requestFolder] = parsedEnvironment;
+        }
+
         requests.push(...parsedRequests);
         continue;
       }
@@ -543,6 +620,14 @@ async function readWorkspace(workspacePath) {
           // Invalid legacy request files are ignored during migration.
         }
       }
+    }
+
+    if (!environments[normalizedFolder]) {
+      environments[normalizedFolder] = normalizeEnvironment(
+        { variables: [] },
+        normalizedFolder,
+        collectionRelativePath(workspaceRoot, normalizedFolder)
+      );
     }
   }
 
@@ -585,7 +670,7 @@ ipcMain.handle("request:save", async (_event, workspacePath, request) => {
   ensureInsideWorkspace(workspaceRoot, targetPath);
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
 
-  const existingRequests = await readCollectionFile(workspaceRoot, folder, relativePath);
+  const existingDocument = await readCollectionDocument(workspaceRoot, folder, relativePath);
   const normalized = normalizeRequest(
     {
       ...request,
@@ -595,12 +680,12 @@ ipcMain.handle("request:save", async (_event, workspacePath, request) => {
     relativePath,
     folder
   );
-  const shouldUpdateExisting = Boolean(request.id && existingRequests.some((existingRequest) => existingRequest.id === request.id));
+  const shouldUpdateExisting = Boolean(request.id && existingDocument.requests.some((existingRequest) => existingRequest.id === request.id));
   const nextRequests = shouldUpdateExisting
-    ? existingRequests.map((existingRequest) => (existingRequest.id === request.id ? normalized : existingRequest))
-    : [...existingRequests, normalized];
+    ? existingDocument.requests.map((existingRequest) => (existingRequest.id === request.id ? normalized : existingRequest))
+    : [...existingDocument.requests, normalized];
 
-  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath), "utf8");
+  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath, existingDocument.environment), "utf8");
   return readWorkspace(workspaceRoot);
 });
 
@@ -613,17 +698,21 @@ ipcMain.handle("request:delete", async (_event, workspacePath, request) => {
   const targetPath = path.join(workspaceRoot, relativePath);
   ensureInsideWorkspace(workspaceRoot, targetPath);
 
-  const existingRequests = await readCollectionFile(workspaceRoot, folder, relativePath);
-  const nextRequests = existingRequests.filter((existingRequest) => existingRequest.id !== request.id);
-  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath), "utf8");
+  const existingDocument = await readCollectionDocument(workspaceRoot, folder, relativePath);
+  const nextRequests = existingDocument.requests.filter((existingRequest) => existingRequest.id !== request.id);
+  await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath, existingDocument.environment), "utf8");
   return readWorkspace(workspaceRoot);
 });
 
 ipcMain.handle("environment:save", async (_event, workspacePath, environment) => {
   const workspaceRoot = path.resolve(workspacePath);
   const folder = environment.folder || "";
-  const targetPath = path.join(workspaceRoot, folder, ENV_FILE_NAME);
+  const relativePath = environment.relativePath && environment.relativePath.endsWith(HTTP_FILE_SUFFIX)
+    ? environment.relativePath
+    : collectionRelativePath(workspaceRoot, folder);
+  const targetPath = path.join(workspaceRoot, relativePath);
   ensureInsideWorkspace(workspaceRoot, targetPath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
 
   const activeByKey = new Set();
   const normalized = normalizeEnvironment(
@@ -645,10 +734,12 @@ ipcMain.handle("environment:save", async (_event, workspacePath, environment) =>
       }),
       updatedAt: new Date().toISOString()
     },
-    folder
+    folder,
+    relativePath
   );
 
-  await fs.writeFile(targetPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  const existingDocument = await readCollectionDocument(workspaceRoot, folder, relativePath);
+  await fs.writeFile(targetPath, serializeHttpCollection(existingDocument.requests, relativePath, normalized), "utf8");
   return readWorkspace(workspaceRoot);
 });
 
@@ -686,11 +777,15 @@ ipcMain.handle("folder:delete", async (_event, workspacePath, folder) => {
 
 ipcMain.handle("folder:create", async (_event, workspacePath, parentFolder, name) => {
   const workspaceRoot = path.resolve(workspacePath);
-  const safeName = slugify(name || "New Folder");
-  const targetPath = path.join(workspaceRoot, parentFolder || "", safeName);
-  ensureInsideWorkspace(workspaceRoot, targetPath);
-  await fs.mkdir(targetPath, { recursive: false });
-  return readWorkspace(workspaceRoot);
+  const parentPath = folderFullPath(workspaceRoot, parentFolder || "");
+  ensureInsideWorkspace(workspaceRoot, parentPath);
+
+  const { createdFolder } = await createAvailableChildFolder(workspaceRoot, parentFolder || "", name);
+
+  return {
+    workspace: await readWorkspace(workspaceRoot),
+    createdFolder
+  };
 });
 
 ipcMain.handle("settings:set-verify-ssl", (_event, value) => {

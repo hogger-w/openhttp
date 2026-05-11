@@ -204,6 +204,12 @@
   background: #7557c2;
 }
 
+.tab-kind.env {
+  gap: 3px;
+  color: #1f6b4a;
+  background: rgba(31, 107, 74, 0.16);
+}
+
 .empty-panel,
 .empty-result {
   display: grid;

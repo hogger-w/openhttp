@@ -95,7 +95,7 @@ For public distribution, configure proper Windows code signing before release.
 OpenHTTP stores requests directly in the selected workspace folder.
 
 - Requests are stored in `.http` collection files.
-- Each folder has one `.openhttp.env.json` environment file.
+- Environment variables are stored in the folder's `.http` collection file.
 - A folder named `data` stores its requests in `data/data.http`.
 
 HTTP example:

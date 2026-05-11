@@ -170,9 +170,14 @@ export function HttpWorkbench({
             onChange={(event) => updateHttpDraft((request) => ({ ...request, url: event.target.value }))}
             placeholder="https://api.example.com/users or {{baseUrl}}/users"
           />
-          <button className="button send" onClick={sendHttp} disabled={isSending || !draft.url.trim()} title="Send request">
+          <button
+            className={`button send ${isSending ? "cancel" : ""}`}
+            onClick={sendHttp}
+            disabled={!isSending && !draft.url.trim()}
+            title={isSending ? "Cancel request" : "Send request"}
+          >
             {isSending ? <RefreshCw className="spin" size={16} /> : <Send size={16} />}
-            Send
+            {isSending ? "Cancel" : "Send"}
           </button>
         </div>
         <VariableHints value={draft.url} environment={environment} />

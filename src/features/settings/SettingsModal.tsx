@@ -72,7 +72,7 @@ export function SettingsModal({
                 <ShieldCheck size={34} />
                 <h3>OpenHTTP</h3>
                 <p>
-                  OpenHTTP is a local-first HTTP and WebSocket testing client. Collections, requests, and environment files
+                  OpenHTTP is a local-first HTTP and WebSocket testing client. Collections, requests, and environment variables
                   stay in your selected folder so they are easy to inspect, version, and move.
                 </p>
               </div>
