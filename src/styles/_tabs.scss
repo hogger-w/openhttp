@@ -27,6 +27,7 @@
 }
 
 .request-tab {
+  --request-tab-active-bg: color-mix(in srgb, var(--accent) 14%, var(--panel-soft));
   position: relative;
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr) 24px;
@@ -60,13 +61,13 @@
 .request-tab::before {
   left: -12px;
   border-bottom-right-radius: 12px;
-  box-shadow: 6px 6px 0 6px var(--panel);
+  box-shadow: 6px 6px 0 6px var(--request-tab-active-bg);
 }
 
 .request-tab::after {
   right: -12px;
   border-bottom-left-radius: 12px;
-  box-shadow: -6px 6px 0 6px var(--panel);
+  box-shadow: -6px 6px 0 6px var(--request-tab-active-bg);
 }
 
 .tab-dirty-indicator {
@@ -108,7 +109,7 @@
 .request-tab.active {
   z-index: 2;
   color: var(--text);
-  background: var(--panel);
+  background: var(--request-tab-active-bg);
 }
 
 .request-tab.active::before,

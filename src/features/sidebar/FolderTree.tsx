@@ -13,6 +13,7 @@ type FolderTreeProps = {
   selectedEnvironmentFolder: string | null;
   expandedFolders: Set<string>;
   onToggleFolder: (folder: string) => void;
+  onSelectFolder: (folder: string) => void;
   onOpenRequest: (request: RequestDraft) => void;
   onShowEnvironment: (folder: string) => void;
   onOpenContextMenu: (menu: ContextMenuState) => void;
@@ -29,6 +30,7 @@ export function FolderTree({
   selectedEnvironmentFolder,
   expandedFolders,
   onToggleFolder,
+  onSelectFolder,
   onOpenRequest,
   onShowEnvironment,
   onOpenContextMenu,
@@ -48,16 +50,34 @@ export function FolderTree({
           onOpenContextMenu({ type: "folder", folder: node.path, x: event.clientX, y: event.clientY });
         }}
       >
-        <button
+        <div
           className={`tree-folder-row ${selectedFolder === node.path ? "active" : ""}`}
           style={{ paddingLeft: 8 + depth * 16 }}
-          onClick={() => onToggleFolder(node.path)}
           title={node.path || workspace.name}
         >
-          <span className="tree-indent-icon">{isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
-          <span className="tree-type-icon"><Folder size={16} /></span>
-          <span>{node.name}</span>
-        </button>
+          <button
+            type="button"
+            className="folder-toggle-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFolder(node.path);
+            }}
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} ${node.name}`}
+            aria-expanded={isExpanded}
+            title={isExpanded ? "Collapse folder" : "Expand folder"}
+          >
+            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </button>
+          <button
+            type="button"
+            className="tree-folder-select"
+            onClick={() => onSelectFolder(node.path)}
+            title={node.path || workspace.name}
+          >
+            <span className="tree-type-icon"><Folder size={16} /></span>
+            <span>{node.name}</span>
+          </button>
+        </div>
         <button
           className="row-menu-button"
           onClick={(event) => {
@@ -132,6 +152,7 @@ export function FolderTree({
               selectedEnvironmentFolder={selectedEnvironmentFolder}
               expandedFolders={expandedFolders}
               onToggleFolder={onToggleFolder}
+              onSelectFolder={onSelectFolder}
               onOpenRequest={onOpenRequest}
               onShowEnvironment={onShowEnvironment}
               onOpenContextMenu={onOpenContextMenu}

@@ -31,6 +31,55 @@
   padding-right: 38px;
 }
 
+.folder-toggle-button,
+.tree-folder-select {
+  border: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.folder-toggle-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+  line-height: 0;
+}
+
+.folder-toggle-button svg {
+  display: block;
+}
+
+.folder-toggle-button:hover,
+.folder-toggle-button:focus-visible {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.tree-folder-row:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+}
+
+.tree-folder-select {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  font-weight: inherit;
+  text-align: left;
+}
+
+.tree-folder-select:focus-visible {
+  outline: none;
+}
+
 .tree-folder-row:hover,
 .environment-row:hover,
 .request-row:hover {

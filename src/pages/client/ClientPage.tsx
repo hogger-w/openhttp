@@ -183,6 +183,7 @@ export function ClientPage({
                   selectedEnvironmentFolder={selectedEnvironmentFolder}
                   expandedFolders={expandedFolders}
                   onToggleFolder={toggleFolder}
+                  onSelectFolder={setSelectedFolder}
                   onOpenRequest={openRequestTab}
                   onShowEnvironment={showEnvironment}
                   onOpenContextMenu={openContextMenu}

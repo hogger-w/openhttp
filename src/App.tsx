@@ -773,7 +773,6 @@ function App() {
 
   const toggleFolder = (folder: string) => {
     const key = folderKey(folder);
-    setSelectedFolder(folder);
     setExpandedFolders((current) => {
       const next = new Set(current);
       if (next.has(key)) {
