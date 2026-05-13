@@ -1,6 +1,6 @@
 {
   "name": "openhttp",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "private": true,
   "description": "A local-first Electron HTTP and WebSocket testing client.",
   "author": "OpenHTTP",
@@ -36,7 +36,12 @@
   "build": {
     "appId": "com.openhttp.app",
     "productName": "OpenHTTP",
+    "executableName": "OpenHTTP",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "scripts/afterPack.cjs",
+    "extraMetadata": {
+      "description": "OpenHTTP"
+    },
     "directories": {
       "output": "release"
     },
@@ -49,6 +54,7 @@
     "npmRebuild": false,
     "win": {
       "signAndEditExecutable": false,
+      "icon": "src/assets/openHTTP.ico",
       "target": [
         {
           "target": "nsis",
@@ -70,7 +76,10 @@
       "packElevateHelper": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "OpenHTTP",
+      "installerIcon": "src/assets/openHTTP.ico",
+      "uninstallerIcon": "src/assets/openHTTP.ico"
     },
     "mac": {
       "category": "public.app-category.developer-tools",

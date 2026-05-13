@@ -4,7 +4,15 @@ const path = require("node:path");
 
 const HTTP_FILE_SUFFIX = ".http";
 const LEGACY_REQUEST_FILE_SUFFIX = ".openhttp.json";
+const APP_NAME = "OpenHTTP";
+const APP_USER_MODEL_ID = "com.openhttp.app";
 const httpMethods = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+const SHORTCUT_FILE_NAME = `${APP_NAME}.lnk`;
+
+app.setName(APP_NAME);
+if (process.platform === "win32") {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+}
 
 app.commandLine.appendSwitch("disable-web-security");
 app.commandLine.appendSwitch("allow-running-insecure-content");
@@ -13,13 +21,129 @@ let mainWindow;
 const isSmokeTest = process.env.OPENHTTP_SMOKE === "1";
 let verifySslCertificates = true;
 
+function getAppIconPath() {
+  return app.isPackaged ? process.execPath : path.join(__dirname, "..", "src", "assets", "openHTTP.ico");
+}
+
+function getWindowsShortcutDetails() {
+  const target = process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+
+  return {
+    target,
+    cwd: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(target),
+    description: APP_NAME,
+    icon: target,
+    iconIndex: 0,
+    appUserModelId: APP_USER_MODEL_ID
+  };
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getAvailableShortcutPath(directory, preferredPath) {
+  if (!(await pathExists(preferredPath))) {
+    return preferredPath;
+  }
+
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = path.join(directory, `${APP_NAME} (${index}).lnk`);
+    if (!(await pathExists(candidate))) {
+      return candidate;
+    }
+  }
+
+  return preferredPath;
+}
+
+async function ensureWindowsStartMenuShortcut() {
+  const shortcutDirectory = path.join(app.getPath("appData"), "Microsoft", "Windows", "Start Menu", "Programs");
+  const shortcutPath = path.join(shortcutDirectory, SHORTCUT_FILE_NAME);
+
+  await fs.mkdir(shortcutDirectory, { recursive: true });
+  shell.writeShortcutLink(shortcutPath, (await pathExists(shortcutPath)) ? "replace" : "create", getWindowsShortcutDetails());
+}
+
+async function repairWindowsTaskbarShortcuts() {
+  const taskbarDirectory = path.join(
+    app.getPath("appData"),
+    "Microsoft",
+    "Internet Explorer",
+    "Quick Launch",
+    "User Pinned",
+    "TaskBar"
+  );
+  const executableTargets = new Set(
+    [process.execPath, getWindowsShortcutDetails().target].map((target) => path.resolve(target).toLowerCase())
+  );
+  let entries;
+
+  try {
+    entries = await fs.readdir(taskbarDirectory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".lnk"))
+      .map(async (entry) => {
+        const shortcutPath = path.join(taskbarDirectory, entry.name);
+        let shortcutDetails;
+
+        try {
+          shortcutDetails = shell.readShortcutLink(shortcutPath);
+        } catch {
+          return;
+        }
+
+        if (!executableTargets.has(path.resolve(shortcutDetails.target || "").toLowerCase())) {
+          return;
+        }
+
+        shell.writeShortcutLink(shortcutPath, "replace", getWindowsShortcutDetails());
+
+        if (!/^electron(?: \(\d+\))?\.lnk$/i.test(entry.name)) {
+          return;
+        }
+
+        const desiredPath = await getAvailableShortcutPath(taskbarDirectory, path.join(taskbarDirectory, SHORTCUT_FILE_NAME));
+        if (path.resolve(desiredPath).toLowerCase() === path.resolve(shortcutPath).toLowerCase()) {
+          return;
+        }
+
+        try {
+          await fs.rename(shortcutPath, desiredPath);
+        } catch {
+          // Windows may keep taskbar shortcuts locked while Explorer refreshes them.
+        }
+      })
+  );
+}
+
+async function ensureWindowsShellIntegration() {
+  if (process.platform !== "win32" || !app.isPackaged) {
+    return;
+  }
+
+  await ensureWindowsStartMenuShortcut();
+  await repairWindowsTaskbarShortcuts();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1380,
     height: 920,
     minWidth: 1040,
     minHeight: 720,
-    title: "OpenHTTP",
+    title: APP_NAME,
+    icon: getAppIconPath(),
     frame: false,
     autoHideMenuBar: true,
     backgroundColor: "#f5f3ef",
@@ -68,7 +192,14 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  try {
+    await ensureWindowsShellIntegration();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Failed to update Windows shortcuts: ${message}`);
+  }
+
   createWindow();
 
   app.on("activate", () => {
