@@ -38,6 +38,7 @@ import {
 import { applyRowsToUrl, resolveVariables } from "./features/requests/urlUtils";
 import { ClientPage } from "./pages/client/ClientPage";
 import { ToolsPage } from "./pages/tools/ToolsPage";
+import openHttpIcon from "./assets/openHTTP.png";
 import type {
   AppPage,
   CloseDirtyTabsDialogState,
@@ -1081,6 +1082,8 @@ function App() {
         }}
       >
         <div className="titlebar-left titlebar-no-drag">
+          <img className="titlebar-app-icon" src={openHttpIcon} alt="OpenHTTP" />
+
           <div className="title-menu" ref={titleMenuRef}>
             <button
               className={`title-menu-button ${isAppMenuOpen ? "active" : ""}`}
