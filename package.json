@@ -54,7 +54,7 @@
     "npmRebuild": false,
     "win": {
       "signAndEditExecutable": false,
-      "icon": "src/assets/openHTTP.ico",
+      "icon": "assets/oh.ico",
       "target": [
         {
           "target": "nsis",
@@ -84,8 +84,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "OpenHTTP",
-      "installerIcon": "src/assets/openHTTP.ico",
-      "uninstallerIcon": "src/assets/openHTTP.ico"
+      "installerIcon": "assets/oh.ico",
+      "uninstallerIcon": "assets/oh.ico"
     },
     "mac": {
       "category": "public.app-category.developer-tools",

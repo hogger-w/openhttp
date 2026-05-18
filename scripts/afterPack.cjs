@@ -3,7 +3,7 @@ const path = require("node:path");
 
 const appName = "OpenHTTP";
 const rceditPath = path.join(__dirname, "..", "node_modules", "electron-winstaller", "vendor", "rcedit.exe");
-const iconPath = path.join(__dirname, "..", "src", "assets", "openHTTP.ico");
+const iconPath = path.join(__dirname, "..", "assets", "oh.ico");
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "win32") {

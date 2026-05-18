@@ -22,7 +22,7 @@ const isSmokeTest = process.env.OPENHTTP_SMOKE === "1";
 let verifySslCertificates = true;
 
 function getAppIconPath() {
-  return app.isPackaged ? process.execPath : path.join(__dirname, "..", "src", "assets", "openHTTP.ico");
+  return app.isPackaged ? process.execPath : path.join(__dirname, "..", "assets", "oh.ico");
 }
 
 function getWindowsShortcutDetails() {

@@ -38,7 +38,7 @@ import {
 import { applyRowsToUrl, resolveVariables } from "./features/requests/urlUtils";
 import { ClientPage } from "./pages/client/ClientPage";
 import { ToolsPage } from "./pages/tools/ToolsPage";
-import openHttpIcon from "./assets/openHTTP.png";
+import openHttpIcon from "../assets/oh.png";
 import type {
   AppPage,
   CloseDirtyTabsDialogState,
