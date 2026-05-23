@@ -10,6 +10,10 @@ export type ContextMenuState =
   | { type: "request"; request: RequestDraft; x: number; y: number }
   | { type: "tab"; tabId: string; x: number; y: number };
 
+export type RequestDropTarget =
+  | { type: "folder"; folder: string }
+  | { type: "request"; requestId: string; position: "before" | "after" };
+
 export type CloseDirtyTabsDialogState = {
   dirtyCount: number;
 };

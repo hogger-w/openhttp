@@ -55,6 +55,21 @@ export type WebSocketRequest = BaseRequest & {
 
 export type RequestDraft = HttpRequest | WebSocketRequest;
 
+export type RequestMovePosition = "inside" | "before" | "after";
+
+export type RequestMovePayload = {
+  request: RequestDraft;
+  targetFolder: string;
+  targetRelativePath?: string;
+  targetRequestId?: string | null;
+  position: RequestMovePosition;
+};
+
+export type RequestMoveResult = {
+  workspace: WorkspaceState;
+  movedRequestId: string;
+};
+
 export type EnvironmentVariable = {
   id?: string;
   key: string;

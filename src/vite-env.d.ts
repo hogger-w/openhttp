@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { EnvironmentConfig, RequestDraft, WorkspaceState } from "./types";
+import type { EnvironmentConfig, RequestDraft, RequestMovePayload, RequestMoveResult, WorkspaceState } from "./types";
 
 type CreateFolderResult = {
   workspace: WorkspaceState;
@@ -15,6 +15,7 @@ declare global {
       openWorkspace: () => Promise<WorkspaceState | null>;
       readWorkspace: (workspacePath: string) => Promise<WorkspaceState>;
       saveRequest: (workspacePath: string, request: RequestDraft) => Promise<WorkspaceState>;
+      moveRequest: (workspacePath: string, payload: RequestMovePayload) => Promise<RequestMoveResult>;
       deleteRequest: (workspacePath: string, request: RequestDraft) => Promise<WorkspaceState>;
       saveEnvironment: (workspacePath: string, environment: EnvironmentConfig) => Promise<WorkspaceState>;
       openFolderLocation: (workspacePath: string, folder: string) => Promise<void>;

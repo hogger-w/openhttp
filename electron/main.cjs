@@ -270,6 +270,11 @@ function relativeFolderPath(workspaceRoot, folderPath) {
   return relative === "." ? "" : relative;
 }
 
+function folderFromRelativePath(relativePath) {
+  const folder = path.dirname(relativePath).replaceAll("\\", "/");
+  return folder === "." ? "" : folder;
+}
+
 async function nextAvailableFolderPath(workspaceRoot, folder) {
   if (!folder) {
     throw new Error("The workspace root folder cannot be copied.");
@@ -833,6 +838,85 @@ ipcMain.handle("request:delete", async (_event, workspacePath, request) => {
   const nextRequests = existingDocument.requests.filter((existingRequest) => existingRequest.id !== request.id);
   await fs.writeFile(targetPath, serializeHttpCollection(nextRequests, relativePath, existingDocument.environment), "utf8");
   return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("request:move", async (_event, workspacePath, payload) => {
+  const request = payload?.request;
+  if (!request?.id) {
+    throw new Error("Request cannot be moved before it has been saved.");
+  }
+
+  const workspaceRoot = path.resolve(workspacePath);
+  const requestedSourceFolder = String(request.folder || "").replaceAll("\\", "/");
+  const rawSourceRelativePath = request.relativePath && request.relativePath.endsWith(HTTP_FILE_SUFFIX)
+    ? String(request.relativePath).replaceAll("\\", "/")
+    : collectionRelativePath(workspaceRoot, requestedSourceFolder);
+  const sourcePath = path.resolve(workspaceRoot, rawSourceRelativePath);
+  ensureInsideWorkspace(workspaceRoot, sourcePath);
+  const sourceRelativePath = path.relative(workspaceRoot, sourcePath).replaceAll(path.sep, "/");
+  const sourceFolder = folderFromRelativePath(sourceRelativePath);
+
+  const requestedTargetFolder = String(payload.targetFolder || "").replaceAll("\\", "/");
+  const rawTargetRelativePath = payload.targetRelativePath && String(payload.targetRelativePath).endsWith(HTTP_FILE_SUFFIX)
+    ? String(payload.targetRelativePath).replaceAll("\\", "/")
+    : collectionRelativePath(workspaceRoot, requestedTargetFolder);
+  const targetPath = path.resolve(workspaceRoot, rawTargetRelativePath);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+  const targetRelativePath = path.relative(workspaceRoot, targetPath).replaceAll(path.sep, "/");
+  const targetFolder = folderFromRelativePath(targetRelativePath);
+  const sameDocument = sourceRelativePath === targetRelativePath;
+  const sourceDocument = await readCollectionDocument(workspaceRoot, sourceFolder, sourceRelativePath);
+  const movingRequest = sourceDocument.requests.find((existingRequest) => existingRequest.id === request.id);
+
+  if (!movingRequest) {
+    throw new Error("Request was not found in its source collection.");
+  }
+
+  const movingMarkerId = requestMarkerId(movingRequest);
+  const sourceRequests = sourceDocument.requests.filter((existingRequest) => existingRequest.id !== request.id);
+  const targetDocument = sameDocument
+    ? { requests: sourceRequests, environment: sourceDocument.environment }
+    : await readCollectionDocument(workspaceRoot, targetFolder, targetRelativePath);
+  const targetRequests = targetDocument.requests.filter((existingRequest) => existingRequest.id !== request.id);
+  const nextMarkerId = targetRequests.some((existingRequest) => requestMarkerId(existingRequest) === movingMarkerId)
+    ? cryptoRandomId()
+    : movingMarkerId;
+  const normalized = normalizeRequest(
+    {
+      ...movingRequest,
+      markerId: nextMarkerId,
+      folder: targetFolder,
+      updatedAt: new Date().toISOString(),
+      createdAt: movingRequest.createdAt || new Date().toISOString()
+    },
+    targetRelativePath,
+    targetFolder
+  );
+
+  let insertIndex = targetRequests.length;
+  const targetRequestId = payload.targetRequestId ? String(payload.targetRequestId) : "";
+  if (targetRequestId && targetRequestId !== request.id) {
+    const targetIndex = targetRequests.findIndex((existingRequest) => existingRequest.id === targetRequestId);
+    if (targetIndex >= 0) {
+      insertIndex = payload.position === "after" ? targetIndex + 1 : targetIndex;
+    }
+  }
+
+  targetRequests.splice(insertIndex, 0, normalized);
+
+  if (sameDocument) {
+    await fs.writeFile(targetPath, serializeHttpCollection(targetRequests, targetRelativePath, targetDocument.environment), "utf8");
+  } else {
+    await fs.writeFile(targetPath, serializeHttpCollection(targetRequests, targetRelativePath, targetDocument.environment), "utf8");
+    await fs.writeFile(sourcePath, serializeHttpCollection(sourceRequests, sourceRelativePath, sourceDocument.environment), "utf8");
+  }
+
+  return {
+    workspace: await readWorkspace(workspaceRoot),
+    movedRequestId: normalized.id
+  };
 });
 
 ipcMain.handle("environment:save", async (_event, workspacePath, environment) => {

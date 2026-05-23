@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("openHttpNative", {
   openWorkspace: () => ipcRenderer.invoke("workspace:open"),
   readWorkspace: (workspacePath) => ipcRenderer.invoke("workspace:read", workspacePath),
   saveRequest: (workspacePath, request) => ipcRenderer.invoke("request:save", workspacePath, request),
+  moveRequest: (workspacePath, payload) => ipcRenderer.invoke("request:move", workspacePath, payload),
   deleteRequest: (workspacePath, request) => ipcRenderer.invoke("request:delete", workspacePath, request),
   saveEnvironment: (workspacePath, environment) => ipcRenderer.invoke("environment:save", workspacePath, environment),
   openFolderLocation: (workspacePath, folder) => ipcRenderer.invoke("folder:open-location", workspacePath, folder),

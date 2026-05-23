@@ -56,6 +56,7 @@ import type {
   EnvironmentVariable,
   HttpRequest,
   RequestDraft,
+  RequestMovePayload,
   ResponseState,
   WebSocketMessage,
   WebSocketRequest,
@@ -64,6 +65,19 @@ import type {
 
 function hasOwnPatchValue<T extends object>(patch: T, key: keyof T) {
   return Object.prototype.hasOwnProperty.call(patch, key);
+}
+
+function folderKeysForPath(folder: string) {
+  const keys = [rootFolderId];
+  const parts = folder.split("/").filter(Boolean);
+  let current = "";
+
+  parts.forEach((part) => {
+    current = current ? `${current}/${part}` : part;
+    keys.push(folderKey(current));
+  });
+
+  return keys;
 }
 
 function applyEnvironmentVariablePatch(
@@ -567,6 +581,63 @@ function App() {
     setContextMenu(null);
     if (copied) {
       openRequestTab(copied);
+    }
+  };
+
+  const moveRequest = async (payload: RequestMovePayload) => {
+    if (!workspace || !payload.request.id) {
+      return;
+    }
+
+    const oldId = requestKey(payload.request);
+    const moveResult = await window.openHttpNative.moveRequest(workspace.path, payload);
+    const nextWorkspace = moveResult.workspace;
+    const movedRequest = nextWorkspace.requests.find((item) => item.id === moveResult.movedRequestId);
+
+    setWorkspace(nextWorkspace);
+    setContextMenu(null);
+
+    if (!movedRequest) {
+      return;
+    }
+
+    const nextId = requestKey(movedRequest);
+    const movedDraft = normalizeDraftForEdit(movedRequest);
+    const movedSnapshot = requestSnapshot(movedDraft);
+    setOpenTabs((current) =>
+      current.map((tab) => {
+        if (tab.kind !== "request" || tab.id !== oldId) {
+          return tab;
+        }
+
+        const wasDirty = isTabDirty(tab);
+        return {
+          ...tab,
+          id: nextId,
+          draft: wasDirty
+            ? {
+                ...tab.draft,
+                id: movedRequest.id,
+                markerId: movedRequest.markerId,
+                relativePath: movedRequest.relativePath,
+                fileName: movedRequest.fileName,
+                folder: movedRequest.folder || "",
+                updatedAt: movedRequest.updatedAt
+              }
+            : movedDraft,
+          savedSnapshot: movedSnapshot
+        };
+      })
+    );
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      folderKeysForPath(movedRequest.folder || "").forEach((key) => next.add(key));
+      return next;
+    });
+    setActiveTabId((current) => (current === oldId ? nextId : current));
+
+    if (activeTabId === oldId) {
+      setSelectedFolder(movedRequest.folder || "");
     }
   };
 
@@ -1212,6 +1283,7 @@ function App() {
           openContextMenu={openContextMenu}
           duplicateRequest={duplicateRequest}
           deleteRequest={deleteRequest}
+          moveRequest={moveRequest}
           closeSocket={closeSocket}
           closeTab={closeTab}
           addEnvironmentVariable={addEnvironmentVariable}

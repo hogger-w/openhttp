@@ -1,14 +1,15 @@
-import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { Activity, Check, FolderOpen, Plus, RefreshCw, Save, Search, Trash2 } from "lucide-react";
 import { FolderTree } from "../../features/sidebar/FolderTree";
 import { RequestTabs } from "../../features/tabs/RequestTabs";
 import { EnvironmentWorkbench, FolderBreadcrumb, HttpWorkbench, WebSocketWorkbench } from "../../features/workbench/RequestWorkbench";
-import type { AppPage, ContextMenuState, FolderNode, FormFileMap, RequestTab, WorkbenchTab, WorkbenchView } from "../../shared/appTypes";
+import type { AppPage, ContextMenuState, FolderNode, FormFileMap, RequestDropTarget, RequestTab, WorkbenchTab, WorkbenchView } from "../../shared/appTypes";
 import type {
   EnvironmentConfig,
   EnvironmentVariable,
   HttpRequest,
   RequestDraft,
+  RequestMovePayload,
   ResponseState,
   WebSocketMessage,
   WebSocketRequest,
@@ -60,6 +61,7 @@ type ClientPageProps = {
   openContextMenu: (menu: ContextMenuState) => void;
   duplicateRequest: (request: RequestDraft) => void;
   deleteRequest: (request: RequestDraft) => void;
+  moveRequest: (payload: RequestMovePayload) => Promise<void>;
   closeSocket: () => void;
   closeTab: (tabId: string) => void;
   addEnvironmentVariable: () => void;
@@ -122,6 +124,7 @@ export function ClientPage({
   openContextMenu,
   duplicateRequest,
   deleteRequest,
+  moveRequest,
   closeSocket,
   closeTab,
   addEnvironmentVariable,
@@ -139,6 +142,9 @@ export function ClientPage({
   disconnectWebSocket,
   sendWebSocketMessage
 }: ClientPageProps) {
+  const [draggedRequestId, setDraggedRequestId] = useState<string | null>(null);
+  const [requestDropTarget, setRequestDropTarget] = useState<RequestDropTarget | null>(null);
+
   return (
     <main className="app-shell">
       {!isSidebarHidden && (
@@ -189,6 +195,15 @@ export function ClientPage({
                   onOpenContextMenu={openContextMenu}
                   onDuplicateRequest={duplicateRequest}
                   onDeleteRequest={deleteRequest}
+                  draggedRequestId={draggedRequestId}
+                  dropTarget={requestDropTarget}
+                  onDraggedRequestChange={setDraggedRequestId}
+                  onDropTargetChange={setRequestDropTarget}
+                  onMoveRequest={async (payload) => {
+                    setDraggedRequestId(null);
+                    setRequestDropTarget(null);
+                    await moveRequest(payload);
+                  }}
                 />
               ) : (
                 <div className="empty-panel">Open a local folder</div>
