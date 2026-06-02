@@ -184,7 +184,7 @@ export function ClientPage({
                   node={folderTree}
                   depth={0}
                   workspace={workspace}
-                  selectedFolder={selectedFolder}
+                  selectedFolder={activeView.type === "request" ? null : selectedFolder}
                   selectedRequestId={selectedRequestId}
                   selectedEnvironmentFolder={selectedEnvironmentFolder}
                   expandedFolders={expandedFolders}
@@ -230,7 +230,9 @@ export function ClientPage({
             closeSocket();
             setSaveSuccess(false);
             const nextTab = openTabs.find((tab) => tab.id === tabId);
-            setSelectedFolder(nextTab?.kind === "environment" ? nextTab.environment.folder : nextTab?.draft.folder || "");
+            if (nextTab?.kind === "environment") {
+              setSelectedFolder(nextTab.environment.folder);
+            }
             setActivePage("client");
             setActiveView(nextTab?.kind === "environment" ? { type: "environment", folder: nextTab.environment.folder } : { type: "request" });
             setActiveTabId(tabId);

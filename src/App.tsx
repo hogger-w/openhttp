@@ -113,6 +113,23 @@ function applyEnvironmentVariablePatch(
   return { ...environment, variables };
 }
 
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  const editable = target.closest("input, select, textarea, [contenteditable='true']");
+  if (!editable) {
+    return false;
+  }
+
+  if (editable instanceof HTMLInputElement) {
+    return !["button", "checkbox", "color", "file", "radio", "range", "reset", "submit"].includes(editable.type);
+  }
+
+  return true;
+}
+
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [activePage, setActivePage] = useState<AppPage>("client");
@@ -240,6 +257,10 @@ function App() {
         setContextMenu(null);
         setIsSettingsOpen(false);
       }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a" && !isEditableKeyboardTarget(event.target)) {
+        event.preventDefault();
+      }
     };
 
     window.addEventListener("pointerdown", onPointerDown);
@@ -322,7 +343,6 @@ function App() {
     setSaveSuccess(false);
     const id = requestKey(request);
     const draftForEdit = normalizeDraftForEdit(request);
-    setSelectedFolder(request.folder || "");
     setActivePage("client");
     setActiveView({ type: "request" });
     setActiveTabId(id);
@@ -530,7 +550,9 @@ function App() {
       const baseIndex = activeIndex >= 0 ? activeIndex : firstClosedIndex;
       const nextActive = remaining[Math.max(0, baseIndex - 1)] || remaining[baseIndex] || remaining[0] || null;
       setActiveTabId(nextActive?.id || null);
-      setSelectedFolder(nextActive?.kind === "environment" ? nextActive.environment.folder : nextActive?.draft.folder || "");
+      if (nextActive?.kind === "environment") {
+        setSelectedFolder(nextActive.environment.folder);
+      }
       setActiveView(
         nextActive ? (nextActive.kind === "environment" ? { type: "environment", folder: nextActive.environment.folder } : { type: "request" }) : { type: "empty" }
       );
@@ -635,10 +657,6 @@ function App() {
       return next;
     });
     setActiveTabId((current) => (current === oldId ? nextId : current));
-
-    if (activeTabId === oldId) {
-      setSelectedFolder(movedRequest.folder || "");
-    }
   };
 
   const openFolderLocation = async (folder: string) => {
@@ -647,6 +665,15 @@ function App() {
     }
 
     await window.openHttpNative.openFolderLocation(workspace.path, folder);
+    setContextMenu(null);
+  };
+
+  const openRequestLocation = async (request: RequestDraft) => {
+    if (!workspace) {
+      return;
+    }
+
+    await window.openHttpNative.openRequestLocation(workspace.path, request);
     setContextMenu(null);
   };
 
@@ -1311,6 +1338,8 @@ function App() {
           refObject={contextMenuRef}
           onCreateRequest={createRequest}
           onCreateFolder={createChildFolder}
+          onOpenFolderLocation={openFolderLocation}
+          onOpenRequestLocation={openRequestLocation}
           onDuplicateRequest={duplicateRequest}
           onDeleteRequest={deleteRequest}
           onCloseTab={closeTab}

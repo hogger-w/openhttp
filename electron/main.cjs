@@ -965,6 +965,17 @@ ipcMain.handle("folder:open-location", async (_event, workspacePath, folder) => 
   await shell.openPath(targetPath);
 });
 
+ipcMain.handle("request:open-location", async (_event, workspacePath, request) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const folder = request?.folder || "";
+  const relativePath = request?.relativePath
+    ? String(request.relativePath).replaceAll("\\", "/")
+    : collectionRelativePath(workspaceRoot, folder);
+  const targetPath = path.join(workspaceRoot, relativePath);
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+  shell.showItemInFolder(targetPath);
+});
+
 ipcMain.handle("folder:copy", async (_event, workspacePath, folder) => {
   const workspaceRoot = path.resolve(workspacePath);
   const sourcePath = folderFullPath(workspaceRoot, folder || "");

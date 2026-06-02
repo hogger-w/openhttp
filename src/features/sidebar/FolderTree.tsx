@@ -24,7 +24,7 @@ type FolderTreeProps = {
   node: FolderNode;
   depth: number;
   workspace: WorkspaceState;
-  selectedFolder: string;
+  selectedFolder: string | null;
   selectedRequestId: string | null;
   selectedEnvironmentFolder: string | null;
   expandedFolders: Set<string>;

@@ -19,6 +19,7 @@ declare global {
       deleteRequest: (workspacePath: string, request: RequestDraft) => Promise<WorkspaceState>;
       saveEnvironment: (workspacePath: string, environment: EnvironmentConfig) => Promise<WorkspaceState>;
       openFolderLocation: (workspacePath: string, folder: string) => Promise<void>;
+      openRequestLocation: (workspacePath: string, request: RequestDraft) => Promise<void>;
       copyFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
       deleteFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
       createFolder: (workspacePath: string, parentFolder: string, name: string) => Promise<CreateFolderResult>;
