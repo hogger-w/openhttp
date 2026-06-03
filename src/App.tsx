@@ -63,6 +63,20 @@ import type {
   WorkspaceState
 } from "./types";
 
+type WebSocketStatus = "idle" | "connecting" | "open" | "closed" | "error";
+
+type WebSocketSession = {
+  status: WebSocketStatus;
+  messages: WebSocketMessage[];
+  outbound: string;
+};
+
+const emptyWebSocketSession: WebSocketSession = {
+  status: "idle",
+  messages: [],
+  outbound: ""
+};
+
 function hasOwnPatchValue<T extends object>(patch: T, key: keyof T) {
   return Object.prototype.hasOwnProperty.call(patch, key);
 }
@@ -146,9 +160,7 @@ function App() {
   const [isDark, setIsDark] = useState(() => localStorage.getItem("openhttp:theme") === "dark");
   const [isSending, setIsSending] = useState(false);
   const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
-  const [wsStatus, setWsStatus] = useState<"idle" | "connecting" | "open" | "closed" | "error">("idle");
-  const [wsMessages, setWsMessages] = useState<WebSocketMessage[]>([]);
-  const [wsOutbound, setWsOutbound] = useState("");
+  const [wsSessions, setWsSessions] = useState<Record<string, WebSocketSession>>({});
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>("settings");
@@ -158,7 +170,7 @@ function App() {
   const [activeTool, setActiveTool] = useState<ToolId>("base64");
   const [closeDirtyTabsDialog, setCloseDirtyTabsDialog] = useState<CloseDirtyTabsDialogState | null>(null);
   const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const socketsRef = useRef<Map<string, WebSocket>>(new Map());
   const httpAbortControllerRef = useRef<AbortController | null>(null);
   const draggingRef = useRef(false);
   const titleMenuRef = useRef<HTMLDivElement | null>(null);
@@ -172,6 +184,28 @@ function App() {
   const activeEnvironmentTab = activeTab?.kind === "environment" ? activeTab : null;
   const draft = activeRequestTab?.draft || null;
   const environmentDraft = activeEnvironmentTab?.environment || null;
+  const activeWsSession = activeTabId ? wsSessions[activeTabId] : undefined;
+  const wsStatus = activeWsSession?.status || emptyWebSocketSession.status;
+  const wsMessages = activeWsSession?.messages || emptyWebSocketSession.messages;
+  const wsOutbound = activeWsSession?.outbound || emptyWebSocketSession.outbound;
+
+  const updateWebSocketSession = useCallback((tabId: string, recipe: (session: WebSocketSession) => WebSocketSession) => {
+    setWsSessions((current) => ({
+      ...current,
+      [tabId]: recipe(current[tabId] || emptyWebSocketSession)
+    }));
+  }, []);
+
+  const setActiveWsOutbound = useCallback(
+    (value: string) => {
+      if (!activeRequestTab || activeRequestTab.draft.type !== "websocket") {
+        return;
+      }
+
+      updateWebSocketSession(activeRequestTab.id, (session) => ({ ...session, outbound: value }));
+    },
+    [activeRequestTab, updateWebSocketSession]
+  );
 
   useEffect(() => {
     const recentWorkspace = localStorage.getItem("openhttp:last-workspace");
@@ -231,7 +265,8 @@ function App() {
   useEffect(() => {
     return () => {
       httpAbortControllerRef.current?.abort();
-      socketRef.current?.close();
+      socketsRef.current.forEach((socket) => socket.close());
+      socketsRef.current.clear();
     };
   }, []);
 
@@ -316,6 +351,7 @@ function App() {
     }
 
     localStorage.setItem("openhttp:last-workspace", nextWorkspace.path);
+    closeAllSockets();
     setWorkspace(nextWorkspace);
     setOpenTabs([]);
     setActiveTabId(null);
@@ -328,18 +364,72 @@ function App() {
     }
   };
 
-  const closeSocket = () => {
-    if (socketRef.current) {
-      socketRef.current.close();
-      socketRef.current = null;
+  const closeSockets = (tabIds: string[]) => {
+    if (tabIds.length === 0) {
+      return;
     }
-    setWsMessages([]);
-    setWsOutbound("");
-    setWsStatus("idle");
+
+    const closingIds = new Set(tabIds);
+    closingIds.forEach((tabId) => {
+      const socket = socketsRef.current.get(tabId);
+      if (socket) {
+        socketsRef.current.delete(tabId);
+        socket.close();
+      }
+    });
+
+    setWsSessions((current) => {
+      let changed = false;
+      const next = { ...current };
+      closingIds.forEach((tabId) => {
+        if (next[tabId]) {
+          changed = true;
+          delete next[tabId];
+        }
+      });
+      return changed ? next : current;
+    });
+  };
+
+  const closeAllSockets = () => {
+    socketsRef.current.forEach((socket) => socket.close());
+    socketsRef.current.clear();
+    setWsSessions({});
+  };
+
+  const findSocketTabId = (socket: WebSocket) => {
+    for (const [tabId, currentSocket] of socketsRef.current) {
+      if (currentSocket === socket) {
+        return tabId;
+      }
+    }
+
+    return null;
+  };
+
+  const moveSocketSession = (oldTabId: string, nextTabId: string) => {
+    if (oldTabId === nextTabId) {
+      return;
+    }
+
+    const socket = socketsRef.current.get(oldTabId);
+    if (socket) {
+      socketsRef.current.delete(oldTabId);
+      socketsRef.current.set(nextTabId, socket);
+    }
+
+    setWsSessions((current) => {
+      if (!current[oldTabId]) {
+        return current;
+      }
+
+      const next = { ...current, [nextTabId]: current[oldTabId] };
+      delete next[oldTabId];
+      return next;
+    });
   };
 
   const openRequestTab = (request: RequestDraft, replaceCurrent = false) => {
-    closeSocket();
     setSaveSuccess(false);
     const id = requestKey(request);
     const draftForEdit = normalizeDraftForEdit(request);
@@ -479,6 +569,7 @@ function App() {
     }
 
     const nextId = requestKey(saved);
+    moveSocketSession(activeRequestTab.id, nextId);
     setOpenTabs((current) =>
       current.map((tab) =>
         tab.id === activeRequestTab.id && tab.kind === "request" ? { ...tab, id: nextId, draft: saved, savedSnapshot: requestSnapshot(saved) } : tab
@@ -523,7 +614,6 @@ function App() {
       return;
     }
 
-    closeSocket();
     setContextMenu(null);
 
     const dirtyTabs = openTabs.filter((tab) => idsToClose.includes(tab.id) && isTabDirty(tab));
@@ -540,6 +630,8 @@ function App() {
         }
       }
     }
+
+    closeSockets(idsToClose);
 
     const closingIds = new Set(idsToClose);
     const activeIndex = activeTabId ? openTabs.findIndex((item) => item.id === activeTabId) : -1;
@@ -570,7 +662,7 @@ function App() {
       return;
     }
 
-    closeSocket();
+    closeSockets(openTabs.filter((tab) => tab.kind === "request" && tab.draft.id === request.id).map((tab) => tab.id));
     const nextWorkspace = await window.openHttpNative.deleteRequest(workspace.path, request);
     setWorkspace(nextWorkspace);
     setContextMenu(null);
@@ -626,6 +718,7 @@ function App() {
     const nextId = requestKey(movedRequest);
     const movedDraft = normalizeDraftForEdit(movedRequest);
     const movedSnapshot = requestSnapshot(movedDraft);
+    moveSocketSession(oldId, nextId);
     setOpenTabs((current) =>
       current.map((tab) => {
         if (tab.kind !== "request" || tab.id !== oldId) {
@@ -692,6 +785,14 @@ function App() {
       return;
     }
 
+    const removedTabIds = openTabs
+      .filter((tab) => {
+        const tabFolder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder || "";
+        return tabFolder === folder || tabFolder.startsWith(`${folder}/`);
+      })
+      .map((tab) => tab.id);
+    closeSockets(removedTabIds);
+
     const nextWorkspace = await window.openHttpNative.deleteFolder(workspace.path, folder);
     setWorkspace(nextWorkspace);
     setOpenTabs((current) =>
@@ -711,7 +812,6 @@ function App() {
   };
 
   const showEnvironment = (folder: string) => {
-    closeSocket();
     const environment = workspace?.environments[folder];
 
     if (!environment) {
@@ -1095,24 +1195,35 @@ function App() {
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   };
 
-  const addWsMessage = useCallback((message: Omit<WebSocketMessage, "id" | "time">) => {
-    setWsMessages((current) => [
-      ...current,
-      {
-        id: crypto.randomUUID(),
-        time: timeStamp(),
-        ...message
-      }
-    ]);
-  }, []);
+  const addWsMessage = useCallback(
+    (tabId: string, message: Omit<WebSocketMessage, "id" | "time">) => {
+      updateWebSocketSession(tabId, (session) => ({
+        ...session,
+        messages: [
+          ...session.messages,
+          {
+            id: crypto.randomUUID(),
+            time: timeStamp(),
+            ...message
+          }
+        ]
+      }));
+    },
+    [updateWebSocketSession]
+  );
 
   const connectWebSocket = () => {
-    if (!draft || draft.type !== "websocket" || wsStatus === "connecting" || wsStatus === "open") {
+    if (!activeRequestTab || !draft || draft.type !== "websocket") {
       return;
     }
 
-    setWsMessages([]);
-    setWsStatus("connecting");
+    const connectingTabId = activeRequestTab.id;
+    const currentStatus = wsSessions[connectingTabId]?.status || emptyWebSocketSession.status;
+    if (currentStatus === "connecting" || currentStatus === "open") {
+      return;
+    }
+
+    updateWebSocketSession(connectingTabId, (session) => ({ ...session, messages: [], status: "connecting" }));
 
     try {
       const protocols = draft.protocols
@@ -1121,50 +1232,81 @@ function App() {
         .filter(Boolean);
       const resolvedUrl = resolveVariables(draft.url, activeEnvironment);
       const socket = protocols.length > 0 ? new WebSocket(resolvedUrl, protocols) : new WebSocket(resolvedUrl);
-      socketRef.current = socket;
+      socketsRef.current.set(connectingTabId, socket);
 
       socket.addEventListener("open", () => {
-        setWsStatus("open");
-        addWsMessage({ direction: "system", body: "Connected" });
+        const currentTabId = findSocketTabId(socket);
+        if (!currentTabId) {
+          return;
+        }
+
+        updateWebSocketSession(currentTabId, (session) => ({ ...session, status: "open" }));
+        addWsMessage(currentTabId, { direction: "system", body: "Connected" });
       });
 
       socket.addEventListener("message", (event) => {
-        addWsMessage({ direction: "in", body: String(event.data) });
+        const currentTabId = findSocketTabId(socket);
+        if (!currentTabId) {
+          return;
+        }
+
+        addWsMessage(currentTabId, { direction: "in", body: String(event.data) });
       });
 
       socket.addEventListener("close", (event) => {
-        setWsStatus(event.wasClean ? "closed" : "error");
-        addWsMessage({
+        const currentTabId = findSocketTabId(socket);
+        if (!currentTabId) {
+          return;
+        }
+
+        socketsRef.current.delete(currentTabId);
+        updateWebSocketSession(currentTabId, (session) => ({ ...session, status: event.wasClean ? "closed" : "error" }));
+        addWsMessage(currentTabId, {
           direction: "system",
           body: `Closed ${event.code}${event.reason ? `: ${event.reason}` : ""}`
         });
-        socketRef.current = null;
       });
 
       socket.addEventListener("error", () => {
-        setWsStatus("error");
-        addWsMessage({ direction: "error", body: "Connection error" });
+        const currentTabId = findSocketTabId(socket);
+        if (!currentTabId) {
+          return;
+        }
+
+        updateWebSocketSession(currentTabId, (session) => ({ ...session, status: "error" }));
+        addWsMessage(currentTabId, { direction: "error", body: "Connection error" });
       });
     } catch (error) {
-      setWsStatus("error");
-      addWsMessage({ direction: "error", body: error instanceof Error ? error.message : String(error) });
+      updateWebSocketSession(connectingTabId, (session) => ({ ...session, status: "error" }));
+      addWsMessage(connectingTabId, { direction: "error", body: error instanceof Error ? error.message : String(error) });
     }
   };
 
   const disconnectWebSocket = () => {
-    socketRef.current?.close(1000, "Closed by user");
-    socketRef.current = null;
-    setWsStatus("closed");
-  };
-
-  const sendWebSocketMessage = () => {
-    if (!socketRef.current || wsStatus !== "open" || !wsOutbound) {
+    if (!activeRequestTab || activeRequestTab.draft.type !== "websocket") {
       return;
     }
 
-    socketRef.current.send(wsOutbound);
-    addWsMessage({ direction: "out", body: wsOutbound });
-    setWsOutbound("");
+    const disconnectingTabId = activeRequestTab.id;
+    socketsRef.current.get(disconnectingTabId)?.close(1000, "Closed by user");
+    updateWebSocketSession(disconnectingTabId, (session) => ({ ...session, status: "closed" }));
+  };
+
+  const sendWebSocketMessage = () => {
+    if (!activeRequestTab || activeRequestTab.draft.type !== "websocket") {
+      return;
+    }
+
+    const sendingTabId = activeRequestTab.id;
+    const session = wsSessions[sendingTabId] || emptyWebSocketSession;
+    const socket = socketsRef.current.get(sendingTabId);
+    if (!socket || socket.readyState !== WebSocket.OPEN || session.status !== "open" || !session.outbound) {
+      return;
+    }
+
+    socket.send(session.outbound);
+    addWsMessage(sendingTabId, { direction: "out", body: session.outbound });
+    updateWebSocketSession(sendingTabId, (current) => ({ ...current, outbound: "" }));
   };
 
   return (
@@ -1300,7 +1442,7 @@ function App() {
           setActiveTabId={setActiveTabId}
           setSaveSuccess={setSaveSuccess}
           setFormFiles={setFormFiles}
-          setWsOutbound={setWsOutbound}
+          setWsOutbound={setActiveWsOutbound}
           openWorkspace={openWorkspace}
           refreshWorkspace={refreshWorkspace}
           createRequest={createRequest}
@@ -1311,7 +1453,6 @@ function App() {
           duplicateRequest={duplicateRequest}
           deleteRequest={deleteRequest}
           moveRequest={moveRequest}
-          closeSocket={closeSocket}
           closeTab={closeTab}
           addEnvironmentVariable={addEnvironmentVariable}
           updateEnvironmentVariable={updateEnvironmentVariable}

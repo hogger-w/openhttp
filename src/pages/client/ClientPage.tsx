@@ -62,7 +62,6 @@ type ClientPageProps = {
   duplicateRequest: (request: RequestDraft) => void;
   deleteRequest: (request: RequestDraft) => void;
   moveRequest: (payload: RequestMovePayload) => Promise<void>;
-  closeSocket: () => void;
   closeTab: (tabId: string) => void;
   addEnvironmentVariable: () => void;
   updateEnvironmentVariable: (id: string | undefined, patch: Partial<EnvironmentVariable>) => void;
@@ -125,7 +124,6 @@ export function ClientPage({
   duplicateRequest,
   deleteRequest,
   moveRequest,
-  closeSocket,
   closeTab,
   addEnvironmentVariable,
   updateEnvironmentVariable,
@@ -227,7 +225,6 @@ export function ClientPage({
           activeTabId={activeTabId}
           dirtyTabIds={dirtyTabIds}
           onActivate={(tabId) => {
-            closeSocket();
             setSaveSuccess(false);
             const nextTab = openTabs.find((tab) => tab.id === tabId);
             if (nextTab?.kind === "environment") {
