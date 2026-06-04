@@ -30,6 +30,7 @@ import type {
   HttpRequest,
   KeyValueRow,
   ResponseState,
+  UploadProgressState,
   WebSocketMessage,
   WebSocketRequest
 } from "../../types";
@@ -75,6 +76,29 @@ function useElapsedRequestTime(isSending: boolean, startedAt: number | null, set
   return isSending ? elapsedMs : settledElapsedMs || elapsedMs;
 }
 
+function formatUploadRate(bytesPerSecond: number) {
+  return `${formatBytes(Math.max(0, bytesPerSecond))}/s`;
+}
+
+function UploadProgressMeta({ uploadProgress }: { uploadProgress: UploadProgressState }) {
+  const percent = uploadProgress.percent === null ? null : Math.min(Math.max(uploadProgress.percent, 0), 100);
+  const progressLabel = percent === null ? formatBytes(uploadProgress.loaded) : `${Math.round(percent)}%`;
+  const loadedLabel =
+    uploadProgress.total === null
+      ? formatBytes(uploadProgress.loaded)
+      : `${formatBytes(uploadProgress.loaded)} / ${formatBytes(uploadProgress.total)}`;
+
+  return (
+    <div className="upload-progress-pill" title={`Upload ${loadedLabel}`}>
+      <div className="upload-progress-track" aria-hidden="true">
+        {percent !== null && <div style={{ width: `${percent}%` }} />}
+      </div>
+      <b>Upload {progressLabel}</b>
+      <b>{formatUploadRate(uploadProgress.bytesPerSecond)}</b>
+    </div>
+  );
+}
+
 type HttpWorkbenchProps = {
   draft: HttpRequest;
   environment?: EnvironmentConfig;
@@ -82,6 +106,7 @@ type HttpWorkbenchProps = {
   resultTab: "body" | "headers";
   isSending: boolean;
   sendStartedAt: number | null;
+  uploadProgress: UploadProgressState | null;
   response: ResponseState | null;
   requestError: string | null;
   setHttpTab: (tab: "params" | "headers" | "body") => void;
@@ -100,6 +125,7 @@ export function HttpWorkbench({
   resultTab,
   isSending,
   sendStartedAt,
+  uploadProgress,
   response,
   requestError,
   setHttpTab,
@@ -243,6 +269,7 @@ export function HttpWorkbench({
             <div className="response-meta">
               {response ? <span className={response.ok ? "status-ok" : "status-bad"}>{response.status}</span> : <span>Sending</span>}
               <span>{Math.round(elapsedMs)} ms</span>
+              {uploadProgress && <UploadProgressMeta uploadProgress={uploadProgress} />}
               {response && <span>{formatBytes(response.size)}</span>}
               {response && (
                 <button className="icon-button ghost response-download" onClick={() => downloadResponse(response)} title="Download response">
@@ -358,6 +385,52 @@ function StreamingTextPreview({ value }: { value: string }) {
   return <pre ref={preRef}>{value}</pre>;
 }
 
+function AutoHeightResponseTextarea({ value }: { value: string }) {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    let frame = 0;
+    const resize = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const surface = textarea.closest<HTMLElement>(".result-surface");
+        const viewer = textarea.closest<HTMLElement>(".response-json-viewer");
+        const toolbar = viewer?.querySelector<HTMLElement>(".response-json-toolbar");
+        const viewerStyle = viewer ? window.getComputedStyle(viewer) : null;
+        const verticalPadding = viewerStyle
+          ? parseFloat(viewerStyle.paddingTop) + parseFloat(viewerStyle.paddingBottom)
+          : 0;
+        const availableHeight = surface ? surface.clientHeight - (toolbar?.offsetHeight || 0) - verticalPadding : 0;
+        textarea.style.height = "0px";
+        textarea.style.height = `${Math.max(textarea.scrollHeight, availableHeight, 220)}px`;
+      });
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    const surface = textarea.closest<HTMLElement>(".result-surface");
+    if (surface) {
+      observer.observe(surface);
+    } else if (textarea.parentElement) {
+      observer.observe(textarea.parentElement);
+    }
+    window.addEventListener("resize", resize);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", resize);
+    };
+  }, [value]);
+
+  return <textarea ref={textareaRef} value={value} readOnly rows={1} spellCheck={false} />;
+}
+
 function ResponseJsonViewer({ value }: { value: string }) {
   const [displayValue, setDisplayValue] = useState(value);
   const [foldedStarts, setFoldedStarts] = useState<Set<number>>(new Set());
@@ -436,7 +509,7 @@ function ResponseJsonViewer({ value }: { value: string }) {
             );
           })}
         </div>
-        <textarea value={rendered.text || "(empty response)"} readOnly spellCheck={false} />
+        <AutoHeightResponseTextarea value={rendered.text || "(empty response)"} />
       </div>
       {error && <span className="response-json-error">{error}</span>}
     </div>

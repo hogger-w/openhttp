@@ -109,6 +109,14 @@ export type ResponseState = {
   contentType: string;
 };
 
+export type UploadProgressState = {
+  tabId: string;
+  loaded: number;
+  total: number | null;
+  percent: number | null;
+  bytesPerSecond: number;
+};
+
 export type WebSocketMessage = {
   id: string;
   direction: "in" | "out" | "system" | "error";

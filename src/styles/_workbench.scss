@@ -584,6 +584,38 @@ body.panel-resizing * {
   background: var(--panel-soft);
 }
 
+.upload-progress-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  max-width: 310px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--panel-soft);
+}
+
+.upload-progress-pill b {
+  min-width: 0;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.upload-progress-track {
+  width: 58px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+}
+
+.upload-progress-track div {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
 .response-meta .status-ok {
   color: #0f6f5d;
   background: #dff4eb;
@@ -636,11 +668,13 @@ body.panel-resizing * {
 }
 
 .response-json-editor {
-  flex: 1;
+  flex: 1 0 auto;
   min-height: 220px;
 }
 
 .response-json-editor textarea {
+  min-height: 220px;
+  overflow: hidden;
   color: var(--text);
   cursor: text;
 }

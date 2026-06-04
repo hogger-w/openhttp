@@ -11,6 +11,7 @@ import type {
   RequestDraft,
   RequestMovePayload,
   ResponseState,
+  UploadProgressState,
   WebSocketMessage,
   WebSocketRequest,
   WorkspaceState
@@ -38,6 +39,7 @@ type ClientPageProps = {
   saveSuccess: boolean;
   isSending: boolean;
   sendStartedAt: number | null;
+  uploadProgress: UploadProgressState | null;
   wsStatus: "idle" | "connecting" | "open" | "closed" | "error";
   wsMessages: WebSocketMessage[];
   wsOutbound: string;
@@ -100,6 +102,7 @@ export function ClientPage({
   saveSuccess,
   isSending,
   sendStartedAt,
+  uploadProgress,
   wsStatus,
   wsMessages,
   wsOutbound,
@@ -285,6 +288,7 @@ export function ClientPage({
                 resultTab={activeTab.resultTab}
                 isSending={isSending}
                 sendStartedAt={sendStartedAt}
+                uploadProgress={uploadProgress}
                 response={activeTab.response}
                 requestError={activeTab.requestError}
                 setHttpTab={(httpTab) => updateActiveTab((tab) => ({ ...tab, httpTab }))}

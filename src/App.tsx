@@ -55,15 +55,21 @@ import type {
   EnvironmentConfig,
   EnvironmentVariable,
   HttpRequest,
+  KeyValueRow,
   RequestDraft,
   RequestMovePayload,
   ResponseState,
+  UploadProgressState,
   WebSocketMessage,
   WebSocketRequest,
   WorkspaceState
 } from "./types";
 
 type WebSocketStatus = "idle" | "connecting" | "open" | "closed" | "error";
+
+type HttpRequestController = {
+  abort: () => void;
+};
 
 type WebSocketSession = {
   status: WebSocketStatus;
@@ -92,6 +98,43 @@ function folderKeysForPath(folder: string) {
   });
 
   return keys;
+}
+
+function parseXhrResponseHeaders(rawHeaders: string): KeyValueRow[] {
+  return rawHeaders
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const separatorIndex = line.indexOf(":");
+      return {
+        id: crypto.randomUUID(),
+        key: separatorIndex === -1 ? line.trim() : line.slice(0, separatorIndex).trim(),
+        value: separatorIndex === -1 ? "" : line.slice(separatorIndex + 1).trim(),
+        enabled: true
+      };
+    });
+}
+
+function responseBlobFromXhr(xhr: XMLHttpRequest, contentType: string) {
+  if (xhr.response instanceof Blob) {
+    return xhr.response;
+  }
+
+  if (xhr.response instanceof ArrayBuffer) {
+    return new Blob([xhr.response], { type: contentType || "application/octet-stream" });
+  }
+
+  if (typeof xhr.response === "string") {
+    return new Blob([xhr.response], { type: contentType || "text/plain;charset=utf-8" });
+  }
+
+  return new Blob([], { type: contentType || "application/octet-stream" });
+}
+
+async function decodeResponseBlob(blob: Blob, contentType: string) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  return createResponseTextDecoder(contentType).decode(bytes);
 }
 
 function applyEnvironmentVariablePatch(
@@ -160,6 +203,7 @@ function App() {
   const [isDark, setIsDark] = useState(() => localStorage.getItem("openhttp:theme") === "dark");
   const [isSending, setIsSending] = useState(false);
   const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   const [wsSessions, setWsSessions] = useState<Record<string, WebSocketSession>>({});
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -171,7 +215,7 @@ function App() {
   const [closeDirtyTabsDialog, setCloseDirtyTabsDialog] = useState<CloseDirtyTabsDialogState | null>(null);
   const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(null);
   const socketsRef = useRef<Map<string, WebSocket>>(new Map());
-  const httpAbortControllerRef = useRef<AbortController | null>(null);
+  const httpAbortControllerRef = useRef<HttpRequestController | null>(null);
   const draggingRef = useRef(false);
   const titleMenuRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -996,10 +1040,25 @@ function App() {
     const sendingTabId = activeRequestTab.id;
     const startedAt = performance.now();
     const abortController = new AbortController();
-    httpAbortControllerRef.current = abortController;
+    const requestController: HttpRequestController = {
+      abort: () => abortController.abort()
+    };
+    httpAbortControllerRef.current = requestController;
     setIsSending(true);
     setSendStartedAt(startedAt);
+    setUploadProgress(null);
     updateTabById(sendingTabId, (tab) => ({ ...tab, requestError: null, response: null }));
+
+    const updateUploadProgress = (loaded: number, total: number | null) => {
+      const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
+      setUploadProgress({
+        tabId: sendingTabId,
+        loaded,
+        total,
+        percent: total && total > 0 ? (loaded / total) * 100 : null,
+        bytesPerSecond: loaded / elapsedSeconds
+      });
+    };
 
     try {
       const resolvedUrl = resolveVariables(draft.url, activeEnvironment);
@@ -1013,6 +1072,7 @@ function App() {
       });
 
       let requestBody: BodyInit | undefined;
+      let shouldTrackUpload = false;
       if (!bodylessMethods.has(draft.method)) {
         if (draft.body.mode === "form-data") {
           const body = new FormData();
@@ -1025,6 +1085,9 @@ function App() {
 
             if (row.valueType === "file") {
               const files = row.id ? formFiles[row.id] || [] : [];
+              if (files.length > 0) {
+                shouldTrackUpload = true;
+              }
               files.forEach((file) => {
                 const fileWithType = row.contentType ? new File([file], file.name, { type: row.contentType }) : file;
                 body.append(row.key.trim(), fileWithType);
@@ -1065,105 +1128,214 @@ function App() {
         }
       }
 
-      const result = await fetch(url, {
-        method: draft.method,
-        headers,
-        body: requestBody,
-        redirect: "follow",
-        signal: abortController.signal
-      });
-      const contentType = result.headers.get("content-type") || "";
-      const bodyKind = responseBodyKind(contentType);
-      const responseHeaders = Array.from(result.headers.entries()).map(([key, value]) => ({
-        id: crypto.randomUUID(),
-        key,
-        value,
-        enabled: true
-      }));
+      if (shouldTrackUpload) {
+        updateUploadProgress(0, null);
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          let responseInitialized = false;
 
-      const initialResponse: ResponseState = {
-        status: result.status,
-        statusText: result.statusText,
-        ok: result.ok,
-        elapsedMs: performance.now() - startedAt,
-        size: 0,
-        url: result.url,
-        headers: responseHeaders,
-        body: "",
-        bodyBlob: new Blob([], { type: contentType || "application/octet-stream" }),
-        bodyKind,
-        contentType
-      };
+          const createAbortError = () => {
+            const error = new Error("Request canceled");
+            error.name = "AbortError";
+            return error;
+          };
 
-      updateTabById(sendingTabId, (tab) => ({ ...tab, response: initialResponse }));
+          const setInitialResponse = () => {
+            if (responseInitialized || xhr.readyState < XMLHttpRequest.HEADERS_RECEIVED) {
+              return;
+            }
 
-      const reader = result.body?.getReader();
-      const chunks: BlobPart[] = [];
-      let size = 0;
-      let rawText = "";
-      const textDecoder = bodyKind === "text" ? createResponseTextDecoder(contentType) : null;
+            const contentType = xhr.getResponseHeader("content-type") || "";
+            const bodyKind = responseBodyKind(contentType);
+            const responseHeaders = parseXhrResponseHeaders(xhr.getAllResponseHeaders());
+            const initialResponse: ResponseState = {
+              status: xhr.status,
+              statusText: xhr.statusText,
+              ok: xhr.status >= 200 && xhr.status < 300,
+              elapsedMs: performance.now() - startedAt,
+              size: 0,
+              url: xhr.responseURL || url,
+              headers: responseHeaders,
+              body: "",
+              bodyBlob: new Blob([], { type: contentType || "application/octet-stream" }),
+              bodyKind,
+              contentType
+            };
 
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            break;
+            responseInitialized = true;
+            updateTabById(sendingTabId, (tab) => ({ ...tab, response: initialResponse }));
+          };
+
+          xhr.open(draft.method, url, true);
+          xhr.responseType = "blob";
+          requestController.abort = () => {
+            abortController.abort();
+            xhr.abort();
+          };
+
+          headers.forEach((value, key) => {
+            xhr.setRequestHeader(key, value);
+          });
+
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState >= XMLHttpRequest.HEADERS_RECEIVED) {
+              setInitialResponse();
+            }
+          };
+          xhr.upload.onprogress = (event) => {
+            updateUploadProgress(event.loaded, event.lengthComputable ? event.total : null);
+          };
+          xhr.upload.onload = (event) => {
+            updateUploadProgress(event.lengthComputable ? event.total : event.loaded, event.lengthComputable ? event.total : null);
+          };
+          xhr.onerror = () => reject(new Error("Network error"));
+          xhr.ontimeout = () => reject(new Error("Request timed out"));
+          xhr.onabort = () => reject(createAbortError());
+          xhr.onload = () => {
+            setInitialResponse();
+
+            void (async () => {
+              const contentType = xhr.getResponseHeader("content-type") || "";
+              const bodyKind = responseBodyKind(contentType);
+              const finalBlob = responseBlobFromXhr(xhr, contentType);
+              const finalBody = bodyKind === "text" ? prettyBody(await decodeResponseBlob(finalBlob, contentType), contentType) : "";
+              updateTabById(sendingTabId, (tab) => ({
+                ...tab,
+                response: tab.response
+                  ? {
+                      ...tab.response,
+                      elapsedMs: performance.now() - startedAt,
+                      size: finalBlob.size,
+                      body: finalBody,
+                      bodyBlob: finalBlob
+                    }
+                  : {
+                      status: xhr.status,
+                      statusText: xhr.statusText,
+                      ok: xhr.status >= 200 && xhr.status < 300,
+                      elapsedMs: performance.now() - startedAt,
+                      size: finalBlob.size,
+                      url: xhr.responseURL || url,
+                      headers: parseXhrResponseHeaders(xhr.getAllResponseHeaders()),
+                      body: finalBody,
+                      bodyBlob: finalBlob,
+                      bodyKind,
+                      contentType
+                    }
+              }));
+            })()
+              .then(resolve)
+              .catch(reject);
+          };
+
+          if (abortController.signal.aborted) {
+            reject(createAbortError());
+            return;
           }
-          if (!value) {
-            continue;
-          }
 
-          const chunk = new Uint8Array(value);
-          chunks.push(chunk);
-          size += chunk.byteLength;
+          xhr.send((requestBody as XMLHttpRequestBodyInit | undefined) ?? null);
+        });
+      } else {
+        const result = await fetch(url, {
+          method: draft.method,
+          headers,
+          body: requestBody,
+          redirect: "follow",
+          signal: abortController.signal
+        });
+        const contentType = result.headers.get("content-type") || "";
+        const bodyKind = responseBodyKind(contentType);
+        const responseHeaders = Array.from(result.headers.entries()).map(([key, value]) => ({
+          id: crypto.randomUUID(),
+          key,
+          value,
+          enabled: true
+        }));
 
-          if (textDecoder) {
-            rawText += textDecoder.decode(chunk, { stream: true });
-            updateTabById(sendingTabId, (tab) => ({
-              ...tab,
-              response: tab.response
-                ? {
-                    ...tab.response,
-                    elapsedMs: performance.now() - startedAt,
-                    size,
-                    body: rawText,
-                    bodyBlob: new Blob(chunks, { type: contentType || "text/plain;charset=utf-8" })
-                  }
-                : tab.response
-            }));
-          } else {
-            updateTabById(sendingTabId, (tab) => ({
-              ...tab,
-              response: tab.response
-                ? {
-                    ...tab.response,
-                    elapsedMs: performance.now() - startedAt,
-                    size
-                  }
-                : tab.response
-            }));
+        const initialResponse: ResponseState = {
+          status: result.status,
+          statusText: result.statusText,
+          ok: result.ok,
+          elapsedMs: performance.now() - startedAt,
+          size: 0,
+          url: result.url,
+          headers: responseHeaders,
+          body: "",
+          bodyBlob: new Blob([], { type: contentType || "application/octet-stream" }),
+          bodyKind,
+          contentType
+        };
+
+        updateTabById(sendingTabId, (tab) => ({ ...tab, response: initialResponse }));
+
+        const reader = result.body?.getReader();
+        const chunks: BlobPart[] = [];
+        let size = 0;
+        let rawText = "";
+        const textDecoder = bodyKind === "text" ? createResponseTextDecoder(contentType) : null;
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+            if (!value) {
+              continue;
+            }
+
+            const chunk = new Uint8Array(value);
+            chunks.push(chunk);
+            size += chunk.byteLength;
+
+            if (textDecoder) {
+              rawText += textDecoder.decode(chunk, { stream: true });
+              updateTabById(sendingTabId, (tab) => ({
+                ...tab,
+                response: tab.response
+                  ? {
+                      ...tab.response,
+                      elapsedMs: performance.now() - startedAt,
+                      size,
+                      body: rawText,
+                      bodyBlob: new Blob(chunks, { type: contentType || "text/plain;charset=utf-8" })
+                    }
+                  : tab.response
+              }));
+            } else {
+              updateTabById(sendingTabId, (tab) => ({
+                ...tab,
+                response: tab.response
+                  ? {
+                      ...tab.response,
+                      elapsedMs: performance.now() - startedAt,
+                      size
+                    }
+                  : tab.response
+              }));
+            }
           }
         }
-      }
 
-      if (textDecoder) {
-        rawText += textDecoder.decode();
-      }
+        if (textDecoder) {
+          rawText += textDecoder.decode();
+        }
 
-      const finalBlob = new Blob(chunks, { type: contentType || "application/octet-stream" });
-      const finalBody = textDecoder ? prettyBody(rawText, contentType) : "";
-      updateTabById(sendingTabId, (tab) => ({
-        ...tab,
-        response: tab.response
-          ? {
-              ...tab.response,
-              elapsedMs: performance.now() - startedAt,
-              size,
-              body: finalBody,
-              bodyBlob: finalBlob
-            }
-          : tab.response
-      }));
+        const finalBlob = new Blob(chunks, { type: contentType || "application/octet-stream" });
+        const finalBody = textDecoder ? prettyBody(rawText, contentType) : "";
+        updateTabById(sendingTabId, (tab) => ({
+          ...tab,
+          response: tab.response
+            ? {
+                ...tab.response,
+                elapsedMs: performance.now() - startedAt,
+                size,
+                body: finalBody,
+                bodyBlob: finalBlob
+              }
+            : tab.response
+        }));
+      }
     } catch (error) {
       const isAbortError = error instanceof Error && error.name === "AbortError";
       updateTabById(sendingTabId, (tab) => ({
@@ -1171,11 +1343,12 @@ function App() {
         requestError: isAbortError ? "Request canceled" : error instanceof Error ? error.message : String(error)
       }));
     } finally {
-      if (httpAbortControllerRef.current === abortController) {
+      if (httpAbortControllerRef.current === requestController) {
         httpAbortControllerRef.current = null;
       }
       setIsSending(false);
       setSendStartedAt(null);
+      setUploadProgress(null);
     }
   };
 
@@ -1429,6 +1602,7 @@ function App() {
           saveSuccess={saveSuccess}
           isSending={isSending}
           sendStartedAt={sendStartedAt}
+          uploadProgress={activeTab?.kind === "request" && uploadProgress?.tabId === activeTab.id ? uploadProgress : null}
           wsStatus={wsStatus}
           wsMessages={wsMessages}
           wsOutbound={wsOutbound}
