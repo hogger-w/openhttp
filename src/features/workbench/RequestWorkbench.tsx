@@ -11,6 +11,8 @@ import {
   Folder,
   MessageSquare,
   Minimize2,
+  PanelTopClose,
+  PanelTopOpen,
   Plus,
   RefreshCw,
   Save,
@@ -138,8 +140,15 @@ export function HttpWorkbench({
 }: HttpWorkbenchProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const panelResizeRef = useRef(false);
+  const isResponseExpandedRef = useRef(false);
+  const lastExpandedRequestHeightRef = useRef<number | null>(null);
   const [requestPanelHeight, setRequestPanelHeight] = useState<number | null>(null);
+  const [isResponseExpanded, setIsResponseExpanded] = useState(false);
   const elapsedMs = useElapsedRequestTime(isSending, sendStartedAt, response?.elapsedMs ?? null);
+
+  useEffect(() => {
+    isResponseExpandedRef.current = isResponseExpanded;
+  }, [isResponseExpanded]);
 
   useEffect(() => {
     const onMouseMove = (event: MouseEvent) => {
@@ -148,12 +157,29 @@ export function HttpWorkbench({
       }
 
       const rect = gridRef.current.getBoundingClientRect();
-      const minRequestHeight = 190;
       const minResponseHeight = 170;
       const dividerHeight = 7;
-      const maxRequestHeight = Math.max(minRequestHeight, rect.height - minResponseHeight - dividerHeight);
-      const nextHeight = Math.min(Math.max(event.clientY - rect.top, minRequestHeight), maxRequestHeight);
+      const rawRequestHeight = event.clientY - rect.top;
+      const maxRequestHeight = Math.max(0, rect.height - minResponseHeight - dividerHeight);
+      const nextHeight = Math.min(Math.max(rawRequestHeight, 0), maxRequestHeight);
+
+      if (nextHeight <= 0) {
+        setRequestPanelHeight(0);
+        isResponseExpandedRef.current = true;
+        setIsResponseExpanded(true);
+        return;
+      }
+
+      if (nextHeight >= 160) {
+        lastExpandedRequestHeightRef.current = nextHeight;
+      }
+
       setRequestPanelHeight(nextHeight);
+
+      if (isResponseExpandedRef.current) {
+        isResponseExpandedRef.current = false;
+        setIsResponseExpanded(false);
+      }
     };
 
     const onMouseUp = () => {
@@ -171,11 +197,33 @@ export function HttpWorkbench({
     };
   }, []);
 
+  const toggleResponseExpansion = () => {
+    if (isResponseExpanded) {
+      isResponseExpandedRef.current = false;
+      setRequestPanelHeight(lastExpandedRequestHeightRef.current);
+      setIsResponseExpanded(false);
+      return;
+    }
+
+    if (requestPanelHeight !== null && requestPanelHeight >= 160) {
+      lastExpandedRequestHeightRef.current = requestPanelHeight;
+    }
+
+    isResponseExpandedRef.current = true;
+    setRequestPanelHeight(0);
+    setIsResponseExpanded(true);
+  };
+
+  const gridStyle =
+    !isResponseExpanded && requestPanelHeight !== null
+      ? { gridTemplateRows: `${requestPanelHeight}px 7px minmax(0, 1fr)` }
+      : undefined;
+
   return (
     <div
-      className="workbench-grid"
+      className={`workbench-grid ${isResponseExpanded ? "response-expanded" : ""}`}
       ref={gridRef}
-      style={requestPanelHeight ? { gridTemplateRows: `${requestPanelHeight}px 7px minmax(0, 1fr)` } : undefined}
+      style={gridStyle}
     >
       <section className="request-panel">
         <div className="url-row">
@@ -251,7 +299,7 @@ export function HttpWorkbench({
         className="panel-height-resizer"
         role="separator"
         aria-orientation="horizontal"
-        title="Drag to resize request and response panels"
+        title={isResponseExpanded ? "Drag down to restore the request panel" : "Drag to resize request and response panels"}
         onMouseDown={(event) => {
           event.preventDefault();
           panelResizeRef.current = true;
@@ -265,19 +313,30 @@ export function HttpWorkbench({
             <Activity size={17} />
             <span>Response</span>
           </div>
-          {(response || isSending) && (
-            <div className="response-meta">
-              {response ? <span className={response.ok ? "status-ok" : "status-bad"}>{response.status}</span> : <span>Sending</span>}
-              <span>{Math.round(elapsedMs)} ms</span>
-              {uploadProgress && <UploadProgressMeta uploadProgress={uploadProgress} />}
-              {response && <span>{formatBytes(response.size)}</span>}
-              {response && (
-                <button className="icon-button ghost response-download" onClick={() => downloadResponse(response)} title="Download response">
-                  <Download size={15} />
-                </button>
-              )}
-            </div>
-          )}
+          <div className="response-header-actions">
+            <button
+              className="icon-button ghost response-layout-toggle"
+              onClick={toggleResponseExpansion}
+              title={isResponseExpanded ? "Show request panel" : "Hide request panel"}
+              aria-label={isResponseExpanded ? "Show request panel" : "Hide request panel"}
+              aria-pressed={isResponseExpanded}
+            >
+              {isResponseExpanded ? <PanelTopOpen size={15} /> : <PanelTopClose size={15} />}
+            </button>
+            {(response || isSending) && (
+              <div className="response-meta">
+                {response ? <span className={response.ok ? "status-ok" : "status-bad"}>{response.status}</span> : <span>Sending</span>}
+                <span>{Math.round(elapsedMs)} ms</span>
+                {uploadProgress && <UploadProgressMeta uploadProgress={uploadProgress} />}
+                {response && <span>{formatBytes(response.size)}</span>}
+                {response && (
+                  <button className="icon-button ghost response-download" onClick={() => downloadResponse(response)} title="Download response">
+                    <Download size={15} />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </header>
 
         <div className="tabs compact">
