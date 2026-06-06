@@ -1,6 +1,6 @@
 {
   "name": "openhttp",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "private": true,
   "description": "A local-first Electron HTTP and WebSocket testing client.",
   "author": "OpenHTTP",

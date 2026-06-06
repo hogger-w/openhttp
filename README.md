@@ -14,7 +14,7 @@ OpenHTTP is a local-first desktop client for testing HTTP and WebSocket APIs. It
 - HTTP request editor with params, headers, and body tabs
 - Raw JSON body editing with line numbers, format, and minify actions
 - Form-data and x-www-form-urlencoded body editors
-- Environment variables with `{{variable}}` URL substitution
+- Environment variables with `{{variable}}` URL and header substitution
 - Streaming response output for LLM and SSE-style APIs
 - Response preview for text, JSON, images, audio, and video
 - JSON response viewer with line numbers, folding, format, and minify actions
@@ -106,6 +106,7 @@ HTTP example:
 # @id mabc123-456
 GET {{baseUrl}}/users
 Accept: application/json
+Authorization: Bearer {{token}}
 ```
 
 WebSocket example:

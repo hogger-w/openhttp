@@ -278,6 +278,7 @@ body.panel-resizing * {
 }
 
 .kv-row {
+  height: 39px;
   min-height: 39px;
 }
 
@@ -286,26 +287,82 @@ body.panel-resizing * {
   border-top: 1px solid var(--border-soft);
 }
 
-.kv-row input:not(.check-cell),
+.kv-input-cell {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  height: 39px;
+  border-left: 1px solid var(--border-soft);
+  overflow: hidden;
+  background: transparent;
+}
+
+.kv-input-cell input,
 .env-row input:not([type="checkbox"]) {
   width: 100%;
   min-width: 0;
   height: 39px;
   border: 0;
-  border-left: 1px solid var(--border-soft);
   outline: 0;
   padding: 0 10px;
   color: var(--text);
   background: transparent;
+  transition: padding 140ms ease;
 }
 
-.kv-row input:not(.check-cell):focus,
+.env-row input:not([type="checkbox"]) {
+  border-left: 1px solid var(--border-soft);
+}
+
+.kv-input-cell.has-variable-hint input {
+  padding-top: 2px;
+  padding-bottom: 13px;
+}
+
+.kv-input-cell.has-variable-hint:focus-within input {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.kv-input-cell:focus-within,
 .form-data-row input:not(.check-cell):focus,
 .form-data-row select:focus {
   border-left-color: var(--border-soft);
   box-shadow: inset 0 0 0 1px var(--accent);
   position: relative;
   z-index: 1;
+}
+
+.kv-row > .check-cell,
+.kv-row > .icon-button {
+  align-self: center;
+}
+
+.kv-variable-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 3px;
+  left: 10px;
+  min-width: 0;
+  color: var(--text-soft);
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.kv-input-cell:focus-within .kv-variable-hint {
+  opacity: 0;
+  transform: translateY(5px);
 }
 
 .check-cell,

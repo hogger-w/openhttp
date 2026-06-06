@@ -700,6 +700,24 @@ function App() {
   const closeTab = (tabId: string) => closeTabs([tabId]);
   const closeAllTabs = () => closeTabs(openTabs.map((tab) => tab.id));
   const closeOtherTabs = (tabId: string) => closeTabs(openTabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id));
+  const reorderTabs = useCallback((tabId: string, nextIndex: number) => {
+    setOpenTabs((current) => {
+      const fromIndex = current.findIndex((tab) => tab.id === tabId);
+      if (fromIndex < 0) {
+        return current;
+      }
+
+      const boundedIndex = Math.min(Math.max(nextIndex, 0), current.length - 1);
+      if (fromIndex === boundedIndex) {
+        return current;
+      }
+
+      const next = [...current];
+      const [tab] = next.splice(fromIndex, 1);
+      next.splice(boundedIndex, 0, tab);
+      return next;
+    });
+  }, []);
 
   const deleteRequest = async (request: RequestDraft) => {
     if (!workspace || !request.relativePath) {
@@ -1066,8 +1084,11 @@ function App() {
       const headers = new Headers();
 
       draft.headers.forEach((row) => {
-        if (row.enabled && row.key.trim()) {
-          headers.set(row.key.trim(), row.value);
+        if (row.enabled) {
+          const key = resolveVariables(row.key, activeEnvironment).trim();
+          if (key) {
+            headers.set(key, resolveVariables(row.value, activeEnvironment));
+          }
         }
       });
 
@@ -1628,6 +1649,7 @@ function App() {
           deleteRequest={deleteRequest}
           moveRequest={moveRequest}
           closeTab={closeTab}
+          reorderTabs={reorderTabs}
           addEnvironmentVariable={addEnvironmentVariable}
           updateEnvironmentVariable={updateEnvironmentVariable}
           removeEnvironmentVariable={removeEnvironmentVariable}

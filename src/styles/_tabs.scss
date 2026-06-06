@@ -21,6 +21,11 @@
   user-select: none;
 }
 
+.request-tabs.dragging,
+.request-tabs.dragging .request-tab {
+  cursor: grabbing;
+}
+
 .request-tabs::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -45,6 +50,10 @@
   cursor: pointer;
   text-align: left;
   user-select: none;
+  transition:
+    background 120ms ease,
+    color 120ms ease,
+    opacity 120ms ease;
 }
 
 .request-tab::before,
@@ -110,6 +119,13 @@
   z-index: 2;
   color: var(--text);
   background: var(--request-tab-active-bg);
+}
+
+.request-tab.dragging {
+  z-index: 3;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel-soft));
+  opacity: 0.82;
 }
 
 .request-tab.active::before,

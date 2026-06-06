@@ -65,6 +65,7 @@ type ClientPageProps = {
   deleteRequest: (request: RequestDraft) => void;
   moveRequest: (payload: RequestMovePayload) => Promise<void>;
   closeTab: (tabId: string) => void;
+  reorderTabs: (tabId: string, nextIndex: number) => void;
   addEnvironmentVariable: () => void;
   updateEnvironmentVariable: (id: string | undefined, patch: Partial<EnvironmentVariable>) => void;
   removeEnvironmentVariable: (id: string | undefined) => void;
@@ -128,6 +129,7 @@ export function ClientPage({
   deleteRequest,
   moveRequest,
   closeTab,
+  reorderTabs,
   addEnvironmentVariable,
   updateEnvironmentVariable,
   removeEnvironmentVariable,
@@ -238,6 +240,7 @@ export function ClientPage({
             setActiveTabId(tabId);
           }}
           onClose={closeTab}
+          onReorder={reorderTabs}
           onOpenContextMenu={openContextMenu}
         />
 

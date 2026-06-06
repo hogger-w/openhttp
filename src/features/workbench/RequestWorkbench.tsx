@@ -39,7 +39,7 @@ import type {
 import { contentTypeForBodyMode, contentTypeForRaw, formatBytes, formatRawBody, withContentTypeHeader } from "../requests/bodyUtils";
 import { buildFoldedText, findFoldRanges, formatJsonValue, minifyJsonValue } from "../requests/jsonViewUtils";
 import { emptyFormDataRow, emptyRow, ensureEditableFormRows, ensureEditableRows } from "../requests/requestUtils";
-import { resolveVariables } from "../requests/urlUtils";
+import { activeEnvironmentMap, resolveVariables } from "../requests/urlUtils";
 
 export function FolderBreadcrumb({ workspaceName, folder }: { workspaceName: string; folder: string }) {
   const parts = folder.split("/").filter(Boolean);
@@ -280,6 +280,8 @@ export function HttpWorkbench({
             <KeyValueEditor
               rows={draft.headers}
               keySuggestions={commonHeaderNames}
+              environment={environment}
+              showVariableHints
               onRowsChange={(rows) => updateHttpDraft((request) => ({ ...request, headers: rows }))}
             />
           )}
@@ -1088,10 +1090,34 @@ type KeyValueEditorProps = {
   rows: KeyValueRow[];
   onRowsChange: (rows: KeyValueRow[]) => void;
   keySuggestions?: string[];
+  environment?: EnvironmentConfig;
+  showVariableHints?: boolean;
 };
 
-function KeyValueEditor({ rows, onRowsChange, keySuggestions = [] }: KeyValueEditorProps) {
+function variableValueHint(value: string, values: Map<string, string>) {
+  const seen = new Set<string>();
+  const parts: string[] = [];
+
+  for (const match of value.matchAll(/\{\{\s*([\w.-]+)\s*\}\}/g)) {
+    const key = match[1];
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    if (!values.has(key)) {
+      parts.push(`${key} = (not set)`);
+    } else {
+      parts.push(`${key} = ${values.get(key) || "(empty)"}`);
+    }
+  }
+
+  return parts.join(" | ");
+}
+
+function KeyValueEditor({ rows, onRowsChange, keySuggestions = [], environment, showVariableHints = false }: KeyValueEditorProps) {
   const listId = useMemo(() => `kv-suggestions-${crypto.randomUUID()}`, []);
+  const variableValues = useMemo(() => activeEnvironmentMap(environment), [environment]);
 
   const updateRow = (id: string | undefined, patch: Partial<KeyValueRow>) => {
     const nextRows = rows.map((row) => (row.id === id ? { ...row, ...patch } : row));
@@ -1112,45 +1138,64 @@ function KeyValueEditor({ rows, onRowsChange, keySuggestions = [] }: KeyValueEdi
         <span>Value</span>
         <span />
       </div>
-      {rows.map((row) => (
-        <div className="kv-row" key={row.id}>
-          <input
-            className="check-cell"
-            type="checkbox"
-            checked={row.enabled}
-            onChange={(event) => updateRow(row.id, { enabled: event.target.checked })}
-            title="Enabled"
-          />
-          <input
-            value={row.key}
-            list={keySuggestions.length ? listId : undefined}
-            onFocus={(event) => {
-              if (keySuggestions.length) {
-                try {
-                  (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
-                } catch {
-                  // Some Chromium versions only allow showPicker from direct pointer events.
-                }
-              }
-            }}
-            onClick={(event) => {
-              if (keySuggestions.length) {
-                try {
-                  (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
-                } catch {
-                  // Native datalist still opens after typing when showPicker is unavailable.
-                }
-              }
-            }}
-            onChange={(event) => updateRow(row.id, { key: event.target.value })}
-            placeholder="key"
-          />
-          <input value={row.value} onChange={(event) => updateRow(row.id, { value: event.target.value })} placeholder="value" />
-          <button className="icon-button ghost" onClick={() => removeRow(row.id)} title="Remove row">
-            <X size={14} />
-          </button>
-        </div>
-      ))}
+      {rows.map((row) => {
+        const keyHint = showVariableHints ? variableValueHint(row.key, variableValues) : "";
+        const valueHint = showVariableHints ? variableValueHint(row.value, variableValues) : "";
+
+        return (
+          <div className="kv-row" key={row.id}>
+            <input
+              className="check-cell"
+              type="checkbox"
+              checked={row.enabled}
+              onChange={(event) => updateRow(row.id, { enabled: event.target.checked })}
+              title="Enabled"
+            />
+            <div className={`kv-input-cell ${keyHint ? "has-variable-hint" : ""}`}>
+              <input
+                value={row.key}
+                list={keySuggestions.length ? listId : undefined}
+                onFocus={(event) => {
+                  if (keySuggestions.length) {
+                    try {
+                      (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+                    } catch {
+                      // Some Chromium versions only allow showPicker from direct pointer events.
+                    }
+                  }
+                }}
+                onClick={(event) => {
+                  if (keySuggestions.length) {
+                    try {
+                      (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+                    } catch {
+                      // Native datalist still opens after typing when showPicker is unavailable.
+                    }
+                  }
+                }}
+                onChange={(event) => updateRow(row.id, { key: event.target.value })}
+                placeholder="key"
+              />
+              {keyHint && (
+                <small className="kv-variable-hint" title={resolveVariables(row.key, environment)}>
+                  {keyHint}
+                </small>
+              )}
+            </div>
+            <div className={`kv-input-cell ${valueHint ? "has-variable-hint" : ""}`}>
+              <input value={row.value} onChange={(event) => updateRow(row.id, { value: event.target.value })} placeholder="value" />
+              {valueHint && (
+                <small className="kv-variable-hint" title={resolveVariables(row.value, environment)}>
+                  {valueHint}
+                </small>
+              )}
+            </div>
+            <button className="icon-button ghost" onClick={() => removeRow(row.id)} title="Remove row">
+              <X size={14} />
+            </button>
+          </div>
+        );
+      })}
       {keySuggestions.length > 0 && (
         <datalist id={listId}>
           {keySuggestions.map((item) => (
