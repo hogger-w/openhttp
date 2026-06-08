@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("openHttpNative", {
   deleteFolder: (workspacePath, folder) => ipcRenderer.invoke("folder:delete", workspacePath, folder),
   createFolder: (workspacePath, parentFolder, name) => ipcRenderer.invoke("folder:create", workspacePath, parentFolder, name),
   setVerifySsl: (value) => ipcRenderer.invoke("settings:set-verify-ssl", value),
+  getAppVersion: () => ipcRenderer.invoke("app:get-version"),
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggle-maximize"),
   closeWindow: () => ipcRenderer.invoke("window:close"),

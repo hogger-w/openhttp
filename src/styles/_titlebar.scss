@@ -109,6 +109,24 @@
   background: var(--sidebar-hover);
 }
 
+.title-menu-about {
+  justify-content: space-between;
+}
+
+.title-menu-item-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.title-menu-version {
+  margin-left: 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
 .row-menu button.danger {
   color: var(--danger);
 }

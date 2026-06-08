@@ -1,6 +1,7 @@
 import {
   AlignJustify,
   FolderOpen,
+  Info,
   LogOut,
   Maximize2,
   Minimize2,
@@ -205,6 +206,7 @@ function App() {
   const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
   const [wsSessions, setWsSessions] = useState<Record<string, WebSocketSession>>({});
+  const [appVersion, setAppVersion] = useState("");
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSection>("settings");
@@ -317,6 +319,10 @@ function App() {
   useEffect(() => {
     window.openHttpNative.isWindowMaximized().then(setIsMaximized);
     return window.openHttpNative.onWindowMaximizedChange(setIsMaximized);
+  }, []);
+
+  useEffect(() => {
+    window.openHttpNative.getAppVersion().then(setAppVersion).catch(() => setAppVersion(""));
   }, []);
 
   useEffect(() => {
@@ -1548,6 +1554,21 @@ function App() {
                   <Settings size={15} />
                   Setting
                 </button>
+                <span className="menu-separator" />
+                <button
+                  className="title-menu-about"
+                  onClick={() => {
+                    setIsAppMenuOpen(false);
+                    setActiveSettingsSection("about");
+                    setIsSettingsOpen(true);
+                  }}
+                >
+                  <span className="title-menu-item-label">
+                    <Info size={15} />
+                    About
+                  </span>
+                  <span className="title-menu-version">{appVersion ? `v${appVersion}` : "Version"}</span>
+                </button>
                 <button
                   onClick={() => {
                     setIsAppMenuOpen(false);
@@ -1704,6 +1725,7 @@ function App() {
       {isSettingsOpen && (
         <SettingsModal
           activeSection={activeSettingsSection}
+          appVersion={appVersion}
           isDark={isDark}
           verifySsl={verifySsl}
           onClose={() => setIsSettingsOpen(false)}

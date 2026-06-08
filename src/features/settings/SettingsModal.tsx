@@ -3,6 +3,7 @@ import type { SettingsSection } from "../../shared/appTypes";
 
 export function SettingsModal({
   activeSection,
+  appVersion,
   isDark,
   verifySsl,
   onClose,
@@ -11,6 +12,7 @@ export function SettingsModal({
   onToggleVerifySsl
 }: {
   activeSection: SettingsSection;
+  appVersion: string;
   isDark: boolean;
   verifySsl: boolean;
   onClose: () => void;
@@ -71,6 +73,10 @@ export function SettingsModal({
               <div className="about-panel">
                 <ShieldCheck size={34} />
                 <h3>OpenHTTP</h3>
+                <div className="about-version">
+                  <strong>Version</strong>
+                  <span>{appVersion ? `v${appVersion}` : "Unavailable"}</span>
+                </div>
                 <p>
                   OpenHTTP is a local-first HTTP and WebSocket testing client. Collections, requests, and environment variables
                   stay in your selected folder so they are easy to inspect, version, and move.

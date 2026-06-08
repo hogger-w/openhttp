@@ -223,6 +223,28 @@
   font-size: 22px;
 }
 
+.about-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: min(320px, 100%);
+  min-height: 38px;
+  margin: 0 0 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  padding: 0 11px;
+  background: var(--panel-soft);
+}
+
+.about-version strong {
+  color: var(--text);
+}
+
+.about-version span {
+  color: var(--text-muted);
+  font-weight: 730;
+}
+
 .about-panel p {
   margin: 0;
   line-height: 1.7;

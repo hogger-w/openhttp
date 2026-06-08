@@ -24,6 +24,7 @@ declare global {
       deleteFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
       createFolder: (workspacePath: string, parentFolder: string, name: string) => Promise<CreateFolderResult>;
       setVerifySsl: (value: boolean) => Promise<boolean>;
+      getAppVersion: () => Promise<string>;
       minimizeWindow: () => Promise<void>;
       toggleMaximizeWindow: () => Promise<boolean>;
       closeWindow: () => Promise<void>;

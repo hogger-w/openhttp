@@ -1019,6 +1019,8 @@ ipcMain.handle("settings:set-verify-ssl", (_event, value) => {
   return verifySslCertificates;
 });
 
+ipcMain.handle("app:get-version", () => app.getVersion());
+
 ipcMain.handle("window:minimize", () => {
   mainWindow?.minimize();
 });

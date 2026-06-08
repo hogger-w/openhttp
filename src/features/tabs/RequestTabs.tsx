@@ -1,6 +1,25 @@
 import { Database, X } from "lucide-react";
-import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type { ContextMenuState, WorkbenchTab } from "../../shared/appTypes";
+
+type TabDragSession = {
+  tabId: string;
+  startX: number;
+  startScrollLeft: number;
+  pointerId: number;
+  hasMoved: boolean;
+  fromIndex: number;
+  targetIndex: number;
+  tabWidth: number;
+};
+
+type TabDragPreview = {
+  tabId: string;
+  deltaX: number;
+  fromIndex: number;
+  targetIndex: number;
+  tabWidth: number;
+};
 
 export function RequestTabs({
   tabs,
@@ -21,9 +40,12 @@ export function RequestTabs({
 }) {
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const tabOrderRef = useRef(tabs);
-  const dragRef = useRef<{ tabId: string; startX: number; pointerId: number; hasMoved: boolean } | null>(null);
+  const dragRef = useRef<TabDragSession | null>(null);
   const suppressClickRef = useRef(false);
-  const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  const dropFrameRef = useRef<number | null>(null);
+  const [dragPreview, setDragPreview] = useState<TabDragPreview | null>(null);
+  const [isDropping, setIsDropping] = useState(false);
+  const draggingTabId = dragPreview?.tabId || null;
 
   tabOrderRef.current = tabs;
 
@@ -46,28 +68,16 @@ export function RequestTabs({
     }
   };
 
-  const reorderDraggedTab = (tabId: string, clientX: number) => {
-    const tabsElement = tabsRef.current;
-    const currentTabs = tabOrderRef.current;
-    if (!tabsElement || currentTabs.length < 2) {
-      return;
+  const getDragTargetIndex = (drag: TabDragSession, deltaX: number) => {
+    const lastIndex = tabOrderRef.current.length - 1;
+    if (drag.tabWidth <= 0 || lastIndex <= 0) {
+      return drag.fromIndex;
     }
 
-    const fromIndex = currentTabs.findIndex((tab) => tab.id === tabId);
-    if (fromIndex < 0) {
-      return;
-    }
-
-    const nextIndex = Array.from(tabsElement.querySelectorAll<HTMLElement>("[data-tab-id]"))
-      .filter((element) => element.dataset.tabId !== tabId)
-      .reduce((index, element) => {
-        const rect = element.getBoundingClientRect();
-        return clientX > rect.left + rect.width / 2 ? index + 1 : index;
-      }, 0);
-
-    if (nextIndex !== fromIndex) {
-      onReorder(tabId, nextIndex);
-    }
+    const threshold = drag.tabWidth / 2;
+    const indexOffset =
+      deltaX > 0 ? Math.floor((deltaX + threshold) / drag.tabWidth) : Math.ceil((deltaX - threshold) / drag.tabWidth);
+    return Math.min(Math.max(drag.fromIndex + indexOffset, 0), lastIndex);
   };
 
   const startTabDrag = (event: ReactPointerEvent<HTMLDivElement>, tabId: string) => {
@@ -75,11 +85,26 @@ export function RequestTabs({
       return;
     }
 
+    const fromIndex = tabOrderRef.current.findIndex((tab) => tab.id === tabId);
+    if (fromIndex < 0) {
+      return;
+    }
+
+    if (dropFrameRef.current !== null) {
+      window.cancelAnimationFrame(dropFrameRef.current);
+      dropFrameRef.current = null;
+    }
+    setIsDropping(false);
+
     dragRef.current = {
       tabId,
       startX: event.clientX,
+      startScrollLeft: tabsRef.current?.scrollLeft ?? 0,
       pointerId: event.pointerId,
-      hasMoved: false
+      hasMoved: false,
+      fromIndex,
+      targetIndex: fromIndex,
+      tabWidth: event.currentTarget.getBoundingClientRect().width
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -96,10 +121,21 @@ export function RequestTabs({
 
     drag.hasMoved = true;
     suppressClickRef.current = true;
-    setDraggingTabId(drag.tabId);
     event.preventDefault();
     autoScrollTabs(event.clientX);
-    reorderDraggedTab(drag.tabId, event.clientX);
+
+    const currentScrollLeft = tabsRef.current?.scrollLeft ?? drag.startScrollLeft;
+    const deltaX = event.clientX - drag.startX + currentScrollLeft - drag.startScrollLeft;
+    const targetIndex = getDragTargetIndex(drag, deltaX);
+    drag.targetIndex = targetIndex;
+
+    setDragPreview({
+      tabId: drag.tabId,
+      deltaX,
+      fromIndex: drag.fromIndex,
+      targetIndex,
+      tabWidth: drag.tabWidth
+    });
   };
 
   const finishTabDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -110,20 +146,65 @@ export function RequestTabs({
 
     suppressClickRef.current = drag.hasMoved;
     dragRef.current = null;
-    setDraggingTabId(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+
+    setIsDropping(true);
+    if (drag.hasMoved && drag.targetIndex !== drag.fromIndex) {
+      onReorder(drag.tabId, drag.targetIndex);
+    }
+    setDragPreview(null);
+
+    dropFrameRef.current = window.requestAnimationFrame(() => {
+      dropFrameRef.current = window.requestAnimationFrame(() => {
+        setIsDropping(false);
+        dropFrameRef.current = null;
+      });
+    });
 
     window.setTimeout(() => {
       suppressClickRef.current = false;
     }, 0);
   };
 
+  const cancelTabDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    dragRef.current = null;
+    setDragPreview(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const getTabDragStyle = (tabId: string, index: number): CSSProperties | undefined => {
+    if (!dragPreview) {
+      return undefined;
+    }
+
+    if (dragPreview.tabId === tabId) {
+      return { transform: `translateX(${dragPreview.deltaX}px)` };
+    }
+
+    if (dragPreview.targetIndex > dragPreview.fromIndex && index > dragPreview.fromIndex && index <= dragPreview.targetIndex) {
+      return { transform: `translateX(${-dragPreview.tabWidth}px)` };
+    }
+
+    if (dragPreview.targetIndex < dragPreview.fromIndex && index >= dragPreview.targetIndex && index < dragPreview.fromIndex) {
+      return { transform: `translateX(${dragPreview.tabWidth}px)` };
+    }
+
+    return undefined;
+  };
+
   return (
     <div
       ref={tabsRef}
-      className={`request-tabs ${draggingTabId ? "dragging" : ""}`}
+      className={`request-tabs ${draggingTabId ? "dragging" : ""} ${isDropping ? "dropping" : ""}`}
       onWheel={(event) => {
         event.preventDefault();
         event.currentTarget.scrollLeft += event.deltaY || event.deltaX;
@@ -137,7 +218,7 @@ export function RequestTabs({
         }
       }}
     >
-      {tabs.map((tab) => {
+      {tabs.map((tab, index) => {
         const folder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder;
         const folderName = folder ? folder.split("/").at(-1) || folder : "";
         const title = tab.kind === "request" ? tab.draft.name : folderName ? `${folderName} Environment` : "Environment";
@@ -149,10 +230,11 @@ export function RequestTabs({
             data-tab-id={tab.id}
             className={`request-tab ${activeTabId === tab.id ? "active" : ""} ${draggingTabId === tab.id ? "dragging" : ""}`}
             key={tab.id}
+            style={getTabDragStyle(tab.id, index)}
             onPointerDown={(event) => startTabDrag(event, tab.id)}
             onPointerMove={moveTabDrag}
             onPointerUp={finishTabDrag}
-            onPointerCancel={finishTabDrag}
+            onPointerCancel={cancelTabDrag}
             onClick={(event) => {
               if (suppressClickRef.current) {
                 event.preventDefault();
