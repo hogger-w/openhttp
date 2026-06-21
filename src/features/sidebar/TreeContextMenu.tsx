@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { Copy, Folder, FolderOpen, Plus, Trash2, Wifi, X } from "lucide-react";
+import { Copy, Folder, FolderOpen, Pencil, Plus, Trash2, Wifi, X } from "lucide-react";
 import type { ContextMenuState } from "../../shared/appTypes";
 import type { RequestDraft } from "../../types";
 
@@ -8,6 +8,7 @@ export function TreeContextMenu({
   refObject,
   onCreateRequest,
   onCreateFolder,
+  onRenameFolder,
   onOpenFolderLocation,
   onOpenRequestLocation,
   onDuplicateRequest,
@@ -20,6 +21,7 @@ export function TreeContextMenu({
   refObject: RefObject<HTMLDivElement | null>;
   onCreateRequest: (type: "http" | "websocket", folder: string) => void;
   onCreateFolder: (folder: string) => void;
+  onRenameFolder: (folder: string) => void;
   onOpenFolderLocation: (folder: string) => void;
   onOpenRequestLocation: (request: RequestDraft) => void;
   onDuplicateRequest: (request: RequestDraft) => void;
@@ -48,6 +50,12 @@ export function TreeContextMenu({
           <Folder size={14} />
           New Folder
         </button>
+        {menu.folder && (
+          <button onClick={() => onRenameFolder(menu.folder)}>
+            <Pencil size={14} />
+            Rename
+          </button>
+        )}
         <button onClick={() => onOpenFolderLocation(menu.folder)}>
           <FolderOpen size={14} />
           Open in File Explorer

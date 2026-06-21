@@ -1,16 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderPlus } from "lucide-react";
+import { FolderPen, FolderPlus } from "lucide-react";
 
 export function CreateFolderDialog({
   parentLabel,
+  initialName = "New Folder",
+  title = "Create Folder",
+  actionLabel = "Create",
+  actionIcon = "create",
   onCancel,
   onCreate
 }: {
   parentLabel: string;
+  initialName?: string;
+  title?: string;
+  actionLabel?: string;
+  actionIcon?: "create" | "rename";
   onCancel: () => void;
   onCreate: (name: string) => Promise<void>;
 }) {
-  const [name, setName] = useState("New Folder");
+  const [name, setName] = useState(initialName);
   const [error, setError] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -50,9 +58,9 @@ export function CreateFolderDialog({
 
   return (
     <div className="modal-backdrop">
-      <section className="confirm-modal" role="dialog" aria-modal="true" aria-label="Create folder">
+      <section className="confirm-modal" role="dialog" aria-modal="true" aria-label={title}>
         <header className="confirm-modal-title">
-          <h2>Create Folder</h2>
+          <h2>{title}</h2>
         </header>
         <div className="confirm-modal-body">
           <label className="folder-name-field">
@@ -77,8 +85,8 @@ export function CreateFolderDialog({
             Cancel
           </button>
           <button className="button primary" onClick={() => void submit()} disabled={!name.trim() || isCreating}>
-            <FolderPlus size={16} />
-            Create
+            {actionIcon === "rename" ? <FolderPen size={16} /> : <FolderPlus size={16} />}
+            {actionLabel}
           </button>
         </footer>
       </section>

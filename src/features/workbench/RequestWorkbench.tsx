@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import {
   Activity,
   ChevronDown,
@@ -587,13 +587,20 @@ type BodyEditorProps = {
 function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEditorProps) {
   const bodyDisabled = bodylessMethods.has(draft.method);
   const rawType = draft.body.rawType || "json";
+  const rawTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [rawBodyError, setRawBodyError] = useState("");
 
   const updateBody = (patch: Partial<HttpRequest["body"]>) => {
     updateHttpDraft((request) => ({ ...request, body: { ...request.body, ...patch } }));
   };
 
+  const focusRawBody = () => {
+    window.requestAnimationFrame(() => rawTextareaRef.current?.focus());
+  };
+
   const selectMode = (mode: HttpRequest["body"]["mode"]) => {
     const nextContentType = contentTypeForBodyMode(mode, draft.body.rawType || "json");
+    setRawBodyError("");
 
     updateHttpDraft((request) => ({
       ...request,
@@ -612,12 +619,17 @@ function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEdi
     try {
       if (!draft.body.raw.trim()) {
         updateBody({ raw: "" });
+        setRawBodyError("");
+        focusRawBody();
         return;
       }
 
       updateBody({ raw: rawType === "json" ? formatJsonValue(draft.body.raw) : formatRawBody(draft.body.raw, rawType) });
+      setRawBodyError("");
+      focusRawBody();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Unable to format body");
+      setRawBodyError(error instanceof Error ? error.message : "Unable to format body");
+      focusRawBody();
     }
   };
 
@@ -625,12 +637,17 @@ function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEdi
     try {
       if (!draft.body.raw.trim()) {
         updateBody({ raw: "" });
+        setRawBodyError("");
+        focusRawBody();
         return;
       }
 
       updateBody({ raw: minifyJsonValue(draft.body.raw) });
+      setRawBodyError("");
+      focusRawBody();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Unable to minify body");
+      setRawBodyError(error instanceof Error ? error.message : "Unable to minify body");
+      focusRawBody();
     }
   };
 
@@ -660,6 +677,7 @@ function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEdi
               onChange={(event) => {
                 const nextType = event.target.value as "json" | "xml" | "text";
                 const nextContentType = contentTypeForRaw(nextType);
+                setRawBodyError("");
                 updateHttpDraft((request) => ({
                   ...request,
                   headers: withContentTypeHeader(request.headers, nextContentType),
@@ -684,11 +702,20 @@ function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEdi
             )}
           </div>
           <RawBodyTextArea
+            textareaRef={rawTextareaRef}
             value={draft.body.raw}
             disabled={bodyDisabled}
-            onChange={(value) => updateBody({ raw: value })}
+            onChange={(value) => {
+              setRawBodyError("");
+              updateBody({ raw: value });
+            }}
             placeholder={bodyDisabled ? "Body disabled for this method" : "{\n  \"name\": \"OpenHTTP\"\n}"}
           />
+          {rawBodyError && (
+            <span className="raw-body-error" role="alert">
+              {rawBodyError}
+            </span>
+          )}
         </div>
       )}
 
@@ -713,11 +740,13 @@ function BodyEditor({ draft, formFiles, setFormFiles, updateHttpDraft }: BodyEdi
 }
 
 function RawBodyTextArea({
+  textareaRef,
   value,
   disabled,
   onChange,
   placeholder
 }: {
+  textareaRef?: RefObject<HTMLTextAreaElement | null>;
   value: string;
   disabled: boolean;
   onChange: (value: string) => void;
@@ -737,6 +766,7 @@ function RawBodyTextArea({
         ))}
       </div>
       <textarea
+        ref={textareaRef}
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}

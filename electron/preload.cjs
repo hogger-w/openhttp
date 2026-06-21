@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("openHttpNative", {
   openRequestLocation: (workspacePath, request) => ipcRenderer.invoke("request:open-location", workspacePath, request),
   copyFolder: (workspacePath, folder) => ipcRenderer.invoke("folder:copy", workspacePath, folder),
   deleteFolder: (workspacePath, folder) => ipcRenderer.invoke("folder:delete", workspacePath, folder),
+  renameFolder: (workspacePath, folder, name) => ipcRenderer.invoke("folder:rename", workspacePath, folder, name),
   createFolder: (workspacePath, parentFolder, name) => ipcRenderer.invoke("folder:create", workspacePath, parentFolder, name),
   setVerifySsl: (value) => ipcRenderer.invoke("settings:set-verify-ssl", value),
   getAppVersion: () => ipcRenderer.invoke("app:get-version"),

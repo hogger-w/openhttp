@@ -85,6 +85,7 @@ export function JsonFormatTool() {
           onChange={(event) => {
             setValue(event.target.value);
             setFoldedStarts(new Set());
+            setError("");
           }}
           spellCheck={false}
           placeholder='{"hello":"world"}'

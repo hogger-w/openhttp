@@ -22,6 +22,10 @@ export type CreateFolderDialogState = {
   parentFolder: string;
 };
 
+export type RenameFolderDialogState = {
+  folder: string;
+};
+
 export type FormFileMap = Record<string, File[]>;
 
 export type RequestTab = {

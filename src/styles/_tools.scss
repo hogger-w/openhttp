@@ -26,6 +26,8 @@
 }
 
 .tools-shell {
+  flex: 1;
+  min-width: 0;
   background: var(--bg);
 }
 
@@ -77,6 +79,17 @@
   height: 100%;
   padding: 28px;
   background: var(--panel);
+}
+
+.tool-view {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tool-view.active {
+  display: flex;
 }
 
 .tool-panel header {

@@ -503,6 +503,11 @@ body.panel-resizing * {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+.raw-body-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .raw-line-gutter {
   overflow: hidden;
   border-right: 1px solid var(--border-soft);

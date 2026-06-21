@@ -324,6 +324,52 @@ async function createAvailableChildFolder(workspaceRoot, parentFolder, name) {
   }
 }
 
+async function renameCanonicalCollectionFile(workspaceRoot, oldFolder, renamedFolder) {
+  const oldCollectionPath = path.join(workspaceRoot, renamedFolder, collectionFileName(workspaceRoot, oldFolder));
+  const nextCollectionPath = collectionFullPath(workspaceRoot, renamedFolder);
+  const samePath = path.resolve(oldCollectionPath) === path.resolve(nextCollectionPath);
+  const samePathIgnoringCase = path.resolve(oldCollectionPath).toLowerCase() === path.resolve(nextCollectionPath).toLowerCase();
+
+  if (samePath || !(await pathExists(oldCollectionPath)) || (!samePathIgnoringCase && (await pathExists(nextCollectionPath)))) {
+    return;
+  }
+
+  await fs.rename(oldCollectionPath, nextCollectionPath);
+}
+
+async function renameWorkspaceFolder(workspaceRoot, folder, name) {
+  const normalizedFolder = String(folder || "").replaceAll("\\", "/");
+  if (!normalizedFolder) {
+    throw new Error("The workspace root folder cannot be renamed.");
+  }
+
+  const sourcePath = folderFullPath(workspaceRoot, normalizedFolder);
+  ensureInsideWorkspace(workspaceRoot, sourcePath);
+
+  const stats = await fs.stat(sourcePath);
+  if (!stats.isDirectory()) {
+    throw new Error("Folder was not found.");
+  }
+
+  const parentFolder = folderFromRelativePath(normalizedFolder);
+  const targetPath = path.join(workspaceRoot, parentFolder, slugify(name || path.basename(normalizedFolder)));
+  ensureInsideWorkspace(workspaceRoot, targetPath);
+
+  const samePath = path.resolve(sourcePath).toLowerCase() === path.resolve(targetPath).toLowerCase();
+  if (!samePath && (await pathExists(targetPath))) {
+    throw new Error("A folder with that name already exists.");
+  }
+
+  if (path.resolve(sourcePath) !== path.resolve(targetPath)) {
+    await fs.rename(sourcePath, targetPath);
+  }
+
+  const renamedFolder = relativeFolderPath(workspaceRoot, targetPath);
+  await renameCanonicalCollectionFile(workspaceRoot, normalizedFolder, renamedFolder);
+
+  return renamedFolder;
+}
+
 function requestMarkerId(request) {
   if (request.markerId) {
     return String(request.markerId);
@@ -999,6 +1045,16 @@ ipcMain.handle("folder:delete", async (_event, workspacePath, folder) => {
   ensureInsideWorkspace(workspaceRoot, targetPath);
   await fs.rm(targetPath, { recursive: true, force: true });
   return readWorkspace(workspaceRoot);
+});
+
+ipcMain.handle("folder:rename", async (_event, workspacePath, folder, name) => {
+  const workspaceRoot = path.resolve(workspacePath);
+  const renamedFolder = await renameWorkspaceFolder(workspaceRoot, folder, name);
+
+  return {
+    workspace: await readWorkspace(workspaceRoot),
+    renamedFolder
+  };
 });
 
 ipcMain.handle("folder:create", async (_event, workspacePath, parentFolder, name) => {

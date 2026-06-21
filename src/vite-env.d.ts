@@ -7,6 +7,11 @@ type CreateFolderResult = {
   createdFolder: string;
 };
 
+type RenameFolderResult = {
+  workspace: WorkspaceState;
+  renamedFolder: string;
+};
+
 export {};
 
 declare global {
@@ -22,6 +27,7 @@ declare global {
       openRequestLocation: (workspacePath: string, request: RequestDraft) => Promise<void>;
       copyFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
       deleteFolder: (workspacePath: string, folder: string) => Promise<WorkspaceState>;
+      renameFolder: (workspacePath: string, folder: string, name: string) => Promise<RenameFolderResult>;
       createFolder: (workspacePath: string, parentFolder: string, name: string) => Promise<CreateFolderResult>;
       setVerifySsl: (value: boolean) => Promise<boolean>;
       getAppVersion: () => Promise<string>;

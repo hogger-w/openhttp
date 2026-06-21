@@ -46,6 +46,7 @@ import type {
   ContextMenuState,
   CreateFolderDialogState,
   FormFileMap,
+  RenameFolderDialogState,
   SettingsSection,
   ToolId,
   WorkbenchTab,
@@ -72,6 +73,12 @@ type HttpRequestController = {
   abort: () => void;
 };
 
+type HttpRequestRuntimeState = {
+  isSending: boolean;
+  startedAt: number;
+  uploadProgress: UploadProgressState | null;
+};
+
 type WebSocketSession = {
   status: WebSocketStatus;
   messages: WebSocketMessage[];
@@ -82,6 +89,42 @@ const emptyWebSocketSession: WebSocketSession = {
   status: "idle",
   messages: [],
   outbound: ""
+};
+
+const LAST_WORKSPACE_STORAGE_KEY = "openhttp:last-workspace";
+const WORKSPACE_SESSION_STORAGE_PREFIX = "openhttp:workspace-session:";
+
+type RequestWorkbenchTab = Extract<WorkbenchTab, { kind: "request" }>;
+type EnvironmentWorkbenchTab = Extract<WorkbenchTab, { kind: "environment" }>;
+
+type PersistedRequestTab = {
+  kind: "request";
+  id: string;
+  draft: RequestDraft;
+  savedSnapshot: string;
+  httpTab: RequestWorkbenchTab["httpTab"];
+  resultTab: RequestWorkbenchTab["resultTab"];
+};
+
+type PersistedEnvironmentTab = {
+  kind: "environment";
+  id: string;
+  environment: EnvironmentConfig;
+  savedSnapshot: string;
+};
+
+type PersistedWorkbenchTab = PersistedRequestTab | PersistedEnvironmentTab;
+
+type PersistedWorkspaceSession = {
+  version: 1;
+  workspacePath: string;
+  activeTabId: string | null;
+  tabs: PersistedWorkbenchTab[];
+};
+
+type RestoredWorkspaceSession = {
+  tabs: WorkbenchTab[];
+  activeTabId: string | null;
 };
 
 function hasOwnPatchValue<T extends object>(patch: T, key: keyof T) {
@@ -188,6 +231,270 @@ function isEditableKeyboardTarget(target: EventTarget | null) {
   return true;
 }
 
+function workspaceSessionStorageKey(workspacePath: string) {
+  return `${WORKSPACE_SESSION_STORAGE_PREFIX}${workspacePath}`;
+}
+
+function normalizeHttpTab(value: unknown): RequestWorkbenchTab["httpTab"] {
+  return value === "params" || value === "headers" || value === "body" ? value : "body";
+}
+
+function normalizeResultTab(value: unknown): RequestWorkbenchTab["resultTab"] {
+  return value === "headers" || value === "body" ? value : "body";
+}
+
+function createRequestWorkbenchTab(
+  request: RequestDraft,
+  options: {
+    httpTab?: RequestWorkbenchTab["httpTab"];
+    resultTab?: RequestWorkbenchTab["resultTab"];
+    savedSnapshot?: string;
+  } = {}
+): RequestWorkbenchTab {
+  const draft = normalizeDraftForEdit(request);
+
+  return {
+    kind: "request",
+    id: requestKey(draft),
+    draft,
+    savedSnapshot: options.savedSnapshot || requestSnapshot(draft),
+    httpTab: options.httpTab || "body",
+    resultTab: options.resultTab || "body",
+    response: null,
+    requestError: null
+  };
+}
+
+function createEnvironmentWorkbenchTab(environment: EnvironmentConfig, savedSnapshot?: string): EnvironmentWorkbenchTab {
+  const environmentForEdit = normalizeEnvironmentForEdit(environment);
+
+  return {
+    kind: "environment",
+    id: environmentKey(environmentForEdit.folder),
+    environment: environmentForEdit,
+    savedSnapshot: savedSnapshot || environmentSnapshot(environmentForEdit)
+  };
+}
+
+function tabStoragePayload(tab: WorkbenchTab): PersistedWorkbenchTab {
+  if (tab.kind === "request") {
+    return {
+      kind: "request",
+      id: tab.id,
+      draft: tab.draft,
+      savedSnapshot: tab.savedSnapshot,
+      httpTab: tab.httpTab,
+      resultTab: tab.resultTab
+    };
+  }
+
+  return {
+    kind: "environment",
+    id: tab.id,
+    environment: tab.environment,
+    savedSnapshot: tab.savedSnapshot
+  };
+}
+
+function saveWorkspaceSession(workspacePath: string, tabs: WorkbenchTab[], activeTabId: string | null) {
+  try {
+    const session: PersistedWorkspaceSession = {
+      version: 1,
+      workspacePath,
+      activeTabId,
+      tabs: tabs.map(tabStoragePayload)
+    };
+    const storageKey = workspaceSessionStorageKey(workspacePath);
+    const serializedSession = JSON.stringify(session);
+    if (localStorage.getItem(storageKey) !== serializedSession) {
+      localStorage.setItem(storageKey, serializedSession);
+    }
+  } catch (error) {
+    console.warn("Failed to save workspace session", error);
+  }
+}
+
+function readWorkspaceSession(workspacePath: string): PersistedWorkspaceSession | null {
+  try {
+    const raw = localStorage.getItem(workspaceSessionStorageKey(workspacePath));
+    if (!raw) {
+      return null;
+    }
+
+    const session = JSON.parse(raw) as Partial<PersistedWorkspaceSession>;
+    if (session.version !== 1 || session.workspacePath !== workspacePath || !Array.isArray(session.tabs)) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      workspacePath,
+      activeTabId: typeof session.activeTabId === "string" ? session.activeTabId : null,
+      tabs: session.tabs as PersistedWorkbenchTab[]
+    };
+  } catch {
+    return null;
+  }
+}
+
+function requestLookup(workspace: WorkspaceState) {
+  const requests = new Map<string, RequestDraft>();
+
+  workspace.requests.forEach((request) => {
+    requests.set(requestKey(request), request);
+    if (request.id) {
+      requests.set(request.id, request);
+    }
+  });
+
+  return requests;
+}
+
+function restoreRequestTab(tab: PersistedRequestTab, requests: Map<string, RequestDraft>): RequestWorkbenchTab | null {
+  const workspaceRequest = requests.get(tab.id) || (tab.draft?.id ? requests.get(tab.draft.id) : undefined);
+  if (!workspaceRequest) {
+    return null;
+  }
+
+  const currentTab = createRequestWorkbenchTab(workspaceRequest, {
+    httpTab: normalizeHttpTab(tab.httpTab),
+    resultTab: normalizeResultTab(tab.resultTab)
+  });
+  const savedSnapshot = typeof tab.savedSnapshot === "string" ? tab.savedSnapshot : currentTab.savedSnapshot;
+
+  if (!tab.draft || tab.draft.type !== currentTab.draft.type) {
+    return currentTab;
+  }
+
+  const restoredDraft = normalizeDraftForEdit(tab.draft);
+  const shouldRestoreDraft = requestSnapshot(restoredDraft) !== savedSnapshot;
+
+  return shouldRestoreDraft
+    ? {
+        ...currentTab,
+        draft: restoredDraft,
+        id: requestKey(restoredDraft),
+        savedSnapshot
+      }
+    : currentTab;
+}
+
+function restoreEnvironmentTab(tab: PersistedEnvironmentTab, workspace: WorkspaceState): EnvironmentWorkbenchTab | null {
+  const folder = tab.environment?.folder || "";
+  const workspaceEnvironment = workspace.environments[folder];
+  if (!workspaceEnvironment) {
+    return null;
+  }
+
+  const currentTab = createEnvironmentWorkbenchTab(workspaceEnvironment);
+  const savedSnapshot = typeof tab.savedSnapshot === "string" ? tab.savedSnapshot : currentTab.savedSnapshot;
+
+  if (!tab.environment) {
+    return currentTab;
+  }
+
+  const restoredEnvironment = normalizeEnvironmentForEdit(tab.environment);
+  const shouldRestoreEnvironment = environmentSnapshot(restoredEnvironment) !== savedSnapshot;
+
+  return shouldRestoreEnvironment
+    ? {
+        ...currentTab,
+        environment: restoredEnvironment,
+        id: environmentKey(restoredEnvironment.folder),
+        savedSnapshot
+      }
+    : currentTab;
+}
+
+function restoreWorkspaceSession(workspace: WorkspaceState): RestoredWorkspaceSession | null {
+  const session = readWorkspaceSession(workspace.path);
+  if (!session) {
+    return null;
+  }
+
+  const requests = requestLookup(workspace);
+  const restoredTabs: WorkbenchTab[] = [];
+  const seenTabIds = new Set<string>();
+
+  session.tabs.forEach((storedTab) => {
+    const restoredTab =
+      storedTab.kind === "request"
+        ? restoreRequestTab(storedTab, requests)
+        : storedTab.kind === "environment"
+          ? restoreEnvironmentTab(storedTab, workspace)
+          : null;
+
+    if (!restoredTab || seenTabIds.has(restoredTab.id)) {
+      return;
+    }
+
+    seenTabIds.add(restoredTab.id);
+    restoredTabs.push(restoredTab);
+  });
+
+  const activeTabId = restoredTabs.some((tab) => tab.id === session.activeTabId) ? session.activeTabId : restoredTabs[0]?.id || null;
+
+  return {
+    tabs: restoredTabs,
+    activeTabId
+  };
+}
+
+function defaultWorkspaceSession(workspace: WorkspaceState): RestoredWorkspaceSession {
+  const firstRequest = workspace.requests[0];
+  if (!firstRequest) {
+    return {
+      tabs: [],
+      activeTabId: null
+    };
+  }
+
+  const firstTab = createRequestWorkbenchTab(firstRequest);
+  return {
+    tabs: [firstTab],
+    activeTabId: firstTab.id
+  };
+}
+
+function activeViewForTab(tab: WorkbenchTab | null): WorkbenchView {
+  if (!tab) {
+    return { type: "empty" };
+  }
+
+  return tab.kind === "environment" ? { type: "environment", folder: tab.environment.folder } : { type: "request" };
+}
+
+function selectedFolderForTab(tab: WorkbenchTab | null) {
+  if (!tab) {
+    return "";
+  }
+
+  return tab.kind === "environment" ? tab.environment.folder : tab.draft.folder || "";
+}
+
+function isFolderInScope(folder: string, scope: string) {
+  return folder === scope || folder.startsWith(`${scope}/`);
+}
+
+function renamedFolderPath(folder: string, oldFolder: string, nextFolder: string) {
+  if (folder === oldFolder) {
+    return nextFolder;
+  }
+
+  return folder.startsWith(`${oldFolder}/`) ? `${nextFolder}${folder.slice(oldFolder.length)}` : folder;
+}
+
+function expandedFoldersForTabs(tabs: WorkbenchTab[]) {
+  const folders = new Set<string>([rootFolderId]);
+
+  tabs.forEach((tab) => {
+    const folder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder || "";
+    folderKeysForPath(folder).forEach((key) => folders.add(key));
+  });
+
+  return folders;
+}
+
 function App() {
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [activePage, setActivePage] = useState<AppPage>("client");
@@ -202,9 +509,7 @@ function App() {
   const [leftWidth, setLeftWidth] = useState(318);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
   const [isDark, setIsDark] = useState(() => localStorage.getItem("openhttp:theme") === "dark");
-  const [isSending, setIsSending] = useState(false);
-  const [sendStartedAt, setSendStartedAt] = useState<number | null>(null);
-  const [uploadProgress, setUploadProgress] = useState<UploadProgressState | null>(null);
+  const [httpRequestRuntimes, setHttpRequestRuntimes] = useState<Record<string, HttpRequestRuntimeState>>({});
   const [wsSessions, setWsSessions] = useState<Record<string, WebSocketSession>>({});
   const [appVersion, setAppVersion] = useState("");
   const [isAppMenuOpen, setIsAppMenuOpen] = useState(false);
@@ -216,8 +521,10 @@ function App() {
   const [activeTool, setActiveTool] = useState<ToolId>("base64");
   const [closeDirtyTabsDialog, setCloseDirtyTabsDialog] = useState<CloseDirtyTabsDialogState | null>(null);
   const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(null);
+  const [renameFolderDialog, setRenameFolderDialog] = useState<RenameFolderDialogState | null>(null);
   const socketsRef = useRef<Map<string, WebSocket>>(new Map());
-  const httpAbortControllerRef = useRef<HttpRequestController | null>(null);
+  const httpAbortControllersRef = useRef<Map<string, HttpRequestController>>(new Map());
+  const httpRequestTabIdsRef = useRef<Map<HttpRequestController, string>>(new Map());
   const draggingRef = useRef(false);
   const titleMenuRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -230,6 +537,10 @@ function App() {
   const activeEnvironmentTab = activeTab?.kind === "environment" ? activeTab : null;
   const draft = activeRequestTab?.draft || null;
   const environmentDraft = activeEnvironmentTab?.environment || null;
+  const activeHttpRuntime = activeTabId ? httpRequestRuntimes[activeTabId] : undefined;
+  const isActiveHttpSending = Boolean(activeHttpRuntime?.isSending);
+  const activeHttpStartedAt = activeHttpRuntime?.startedAt ?? null;
+  const activeHttpUploadProgress = activeHttpRuntime?.uploadProgress ?? null;
   const activeWsSession = activeTabId ? wsSessions[activeTabId] : undefined;
   const wsStatus = activeWsSession?.status || emptyWebSocketSession.status;
   const wsMessages = activeWsSession?.messages || emptyWebSocketSession.messages;
@@ -253,8 +564,22 @@ function App() {
     [activeRequestTab, updateWebSocketSession]
   );
 
+  const applyWorkspaceState = useCallback((nextWorkspace: WorkspaceState) => {
+    const restoredSession = restoreWorkspaceSession(nextWorkspace) || defaultWorkspaceSession(nextWorkspace);
+    const nextActiveTab = restoredSession.tabs.find((tab) => tab.id === restoredSession.activeTabId) || null;
+
+    setWorkspace(nextWorkspace);
+    setActivePage("client");
+    setOpenTabs(restoredSession.tabs);
+    setActiveTabId(restoredSession.activeTabId);
+    setActiveView(activeViewForTab(nextActiveTab));
+    setSelectedFolder(selectedFolderForTab(nextActiveTab));
+    setExpandedFolders(expandedFoldersForTabs(restoredSession.tabs));
+    setFormFiles({});
+  }, []);
+
   useEffect(() => {
-    const recentWorkspace = localStorage.getItem("openhttp:last-workspace");
+    const recentWorkspace = localStorage.getItem(LAST_WORKSPACE_STORAGE_KEY);
 
     if (!recentWorkspace) {
       return;
@@ -262,18 +587,30 @@ function App() {
 
     window.openHttpNative
       .readWorkspace(recentWorkspace)
-      .then((nextWorkspace) => {
-        setWorkspace(nextWorkspace);
-        setExpandedFolders(new Set([rootFolderId]));
-        if (nextWorkspace.requests[0]) {
-          openRequestTab(nextWorkspace.requests[0], true);
-        }
-      })
+      .then(applyWorkspaceState)
       .catch(() => {
-        localStorage.removeItem("openhttp:last-workspace");
+        localStorage.removeItem(LAST_WORKSPACE_STORAGE_KEY);
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [applyWorkspaceState]);
+
+  useEffect(() => {
+    if (!workspace) {
+      return;
+    }
+
+    saveWorkspaceSession(workspace.path, openTabs, activeTabId);
+  }, [activeTabId, openTabs, workspace]);
+
+  useEffect(() => {
+    const persistSession = () => {
+      if (workspace) {
+        saveWorkspaceSession(workspace.path, openTabs, activeTabId);
+      }
+    };
+
+    window.addEventListener("beforeunload", persistSession);
+    return () => window.removeEventListener("beforeunload", persistSession);
+  }, [activeTabId, openTabs, workspace]);
 
   useEffect(() => {
     localStorage.setItem("openhttp:theme", isDark ? "dark" : "light");
@@ -310,7 +647,9 @@ function App() {
 
   useEffect(() => {
     return () => {
-      httpAbortControllerRef.current?.abort();
+      httpAbortControllersRef.current.forEach((controller) => controller.abort());
+      httpAbortControllersRef.current.clear();
+      httpRequestTabIdsRef.current.clear();
       socketsRef.current.forEach((socket) => socket.close());
       socketsRef.current.clear();
     };
@@ -400,18 +739,45 @@ function App() {
       return;
     }
 
-    localStorage.setItem("openhttp:last-workspace", nextWorkspace.path);
+    localStorage.setItem(LAST_WORKSPACE_STORAGE_KEY, nextWorkspace.path);
     closeAllSockets();
-    setWorkspace(nextWorkspace);
-    setOpenTabs([]);
-    setActiveTabId(null);
-    setSelectedFolder("");
-    setExpandedFolders(new Set([rootFolderId]));
-    setActiveView({ type: "empty" });
+    abortAllHttpRequests();
+    applyWorkspaceState(nextWorkspace);
+  };
 
-    if (nextWorkspace.requests[0]) {
-      openRequestTab(nextWorkspace.requests[0], true);
+  const abortHttpRequests = (tabIds: string[]) => {
+    if (tabIds.length === 0) {
+      return;
     }
+
+    const abortingIds = new Set(tabIds);
+    abortingIds.forEach((tabId) => {
+      const controller = httpAbortControllersRef.current.get(tabId);
+      if (controller) {
+        httpAbortControllersRef.current.delete(tabId);
+        httpRequestTabIdsRef.current.delete(controller);
+        controller.abort();
+      }
+    });
+
+    setHttpRequestRuntimes((current) => {
+      let changed = false;
+      const next = { ...current };
+      abortingIds.forEach((tabId) => {
+        if (next[tabId]) {
+          changed = true;
+          delete next[tabId];
+        }
+      });
+      return changed ? next : current;
+    });
+  };
+
+  const abortAllHttpRequests = () => {
+    httpAbortControllersRef.current.forEach((controller) => controller.abort());
+    httpAbortControllersRef.current.clear();
+    httpRequestTabIdsRef.current.clear();
+    setHttpRequestRuntimes({});
   };
 
   const closeSockets = (tabIds: string[]) => {
@@ -479,30 +845,41 @@ function App() {
     });
   };
 
-  const openRequestTab = (request: RequestDraft, replaceCurrent = false) => {
-    setSaveSuccess(false);
-    const id = requestKey(request);
-    const draftForEdit = normalizeDraftForEdit(request);
-    setActivePage("client");
-    setActiveView({ type: "request" });
-    setActiveTabId(id);
+  const moveHttpRequestRuntime = (oldTabId: string, nextTabId: string) => {
+    if (oldTabId === nextTabId) {
+      return;
+    }
 
-    setOpenTabs((current) => {
-      const existing = current.find((tab) => tab.id === id);
-      if (existing) {
+    const controller = httpAbortControllersRef.current.get(oldTabId);
+    if (controller) {
+      httpAbortControllersRef.current.delete(oldTabId);
+      httpAbortControllersRef.current.set(nextTabId, controller);
+      httpRequestTabIdsRef.current.set(controller, nextTabId);
+    }
+
+    setHttpRequestRuntimes((current) => {
+      if (!current[oldTabId]) {
         return current;
       }
 
-      const nextTab: WorkbenchTab = {
-        kind: "request",
-        id,
-        draft: draftForEdit,
-        savedSnapshot: requestSnapshot(draftForEdit),
-        httpTab: "body",
-        resultTab: "body",
-        response: null,
-        requestError: null
-      };
+      const next = { ...current, [nextTabId]: current[oldTabId] };
+      delete next[oldTabId];
+      return next;
+    });
+  };
+
+  const openRequestTab = (request: RequestDraft, replaceCurrent = false) => {
+    setSaveSuccess(false);
+    const nextTab = createRequestWorkbenchTab(request);
+    setActivePage("client");
+    setActiveView({ type: "request" });
+    setActiveTabId(nextTab.id);
+
+    setOpenTabs((current) => {
+      const existing = current.find((tab) => tab.id === nextTab.id);
+      if (existing) {
+        return current;
+      }
 
       return replaceCurrent ? [nextTab] : [...current, nextTab];
     });
@@ -532,6 +909,15 @@ function App() {
     setCreateFolderDialog({ parentFolder });
   };
 
+  const renameFolder = (folder: string) => {
+    if (!workspace || !folder) {
+      return;
+    }
+
+    setContextMenu(null);
+    setRenameFolderDialog({ folder });
+  };
+
   const confirmCreateFolder = async (name: string) => {
     if (!workspace || !createFolderDialog) {
       return;
@@ -554,6 +940,111 @@ function App() {
       return next;
     });
     setCreateFolderDialog(null);
+  };
+
+  const syncRenamedFolderTabs = (nextWorkspace: WorkspaceState, oldFolder: string, nextFolder: string) => {
+    const tabIdMoves = new Map<string, string>();
+    const nextTabs = openTabs.map((tab) => {
+      const tabFolder = tab.kind === "environment" ? tab.environment.folder : tab.draft.folder || "";
+      if (!isFolderInScope(tabFolder, oldFolder)) {
+        return tab;
+      }
+
+      const renamedTabFolder = renamedFolderPath(tabFolder, oldFolder, nextFolder);
+
+      if (tab.kind === "environment") {
+        const nextEnvironment = nextWorkspace.environments[renamedTabFolder];
+        if (!nextEnvironment) {
+          return tab;
+        }
+
+        const nextEnvironmentForEdit = normalizeEnvironmentForEdit(nextEnvironment);
+        const nextSnapshot = environmentSnapshot(nextEnvironmentForEdit);
+        const nextId = environmentKey(renamedTabFolder);
+        if (nextId !== tab.id) {
+          tabIdMoves.set(tab.id, nextId);
+        }
+
+        return {
+          ...tab,
+          id: nextId,
+          environment: isTabDirty(tab)
+            ? {
+                ...tab.environment,
+                folder: renamedTabFolder,
+                relativePath: nextEnvironment.relativePath,
+                updatedAt: nextEnvironment.updatedAt
+              }
+            : nextEnvironmentForEdit,
+          savedSnapshot: nextSnapshot
+        };
+      }
+
+      const nextRequest = nextWorkspace.requests.find(
+        (request) => tab.draft.markerId && request.markerId === tab.draft.markerId && (request.folder || "") === renamedTabFolder
+      );
+      if (!nextRequest) {
+        return tab;
+      }
+
+      const nextDraft = normalizeDraftForEdit(nextRequest);
+      const nextSnapshot = requestSnapshot(nextDraft);
+      const nextId = requestKey(nextDraft);
+      if (nextId !== tab.id) {
+        tabIdMoves.set(tab.id, nextId);
+      }
+
+      return {
+        ...tab,
+        id: nextId,
+        draft: isTabDirty(tab)
+          ? {
+              ...tab.draft,
+              id: nextRequest.id,
+              markerId: nextRequest.markerId,
+              relativePath: nextRequest.relativePath,
+              fileName: nextRequest.fileName,
+              folder: renamedTabFolder,
+              updatedAt: nextRequest.updatedAt
+            }
+          : nextDraft,
+        savedSnapshot: nextSnapshot
+      };
+    });
+
+    tabIdMoves.forEach((nextId, oldId) => {
+      moveSocketSession(oldId, nextId);
+      moveHttpRequestRuntime(oldId, nextId);
+    });
+    setOpenTabs(nextTabs);
+    setActiveTabId((current) => (current ? tabIdMoves.get(current) || current : current));
+  };
+
+  const confirmRenameFolder = async (name: string) => {
+    if (!workspace || !renameFolderDialog) {
+      return;
+    }
+
+    const oldFolder = renameFolderDialog.folder;
+    const { workspace: nextWorkspace, renamedFolder } = await window.openHttpNative.renameFolder(workspace.path, oldFolder, name);
+
+    setWorkspace(nextWorkspace);
+    syncRenamedFolderTabs(nextWorkspace, oldFolder, renamedFolder);
+    setSelectedFolder((current) => (current && isFolderInScope(current, oldFolder) ? renamedFolderPath(current, oldFolder, renamedFolder) : current));
+    setActiveView((current) =>
+      current.type === "environment" && isFolderInScope(current.folder, oldFolder)
+        ? { type: "environment", folder: renamedFolderPath(current.folder, oldFolder, renamedFolder) }
+        : current
+    );
+    setExpandedFolders((current) => {
+      const next = new Set<string>();
+      current.forEach((key) => {
+        next.add(key !== rootFolderId && isFolderInScope(key, oldFolder) ? renamedFolderPath(key, oldFolder, renamedFolder) : key);
+      });
+      folderKeysForPath(renamedFolder).forEach((key) => next.add(key));
+      return next;
+    });
+    setRenameFolderDialog(null);
   };
 
   const updateActiveTab = (recipe: (tab: Extract<WorkbenchTab, { kind: "request" }>) => Extract<WorkbenchTab, { kind: "request" }>) => {
@@ -620,6 +1111,7 @@ function App() {
 
     const nextId = requestKey(saved);
     moveSocketSession(activeRequestTab.id, nextId);
+    moveHttpRequestRuntime(activeRequestTab.id, nextId);
     setOpenTabs((current) =>
       current.map((tab) =>
         tab.id === activeRequestTab.id && tab.kind === "request" ? { ...tab, id: nextId, draft: saved, savedSnapshot: requestSnapshot(saved) } : tab
@@ -682,6 +1174,7 @@ function App() {
     }
 
     closeSockets(idsToClose);
+    abortHttpRequests(idsToClose);
 
     const closingIds = new Set(idsToClose);
     const activeIndex = activeTabId ? openTabs.findIndex((item) => item.id === activeTabId) : -1;
@@ -730,7 +1223,9 @@ function App() {
       return;
     }
 
-    closeSockets(openTabs.filter((tab) => tab.kind === "request" && tab.draft.id === request.id).map((tab) => tab.id));
+    const removedTabIds = openTabs.filter((tab) => tab.kind === "request" && tab.draft.id === request.id).map((tab) => tab.id);
+    closeSockets(removedTabIds);
+    abortHttpRequests(removedTabIds);
     const nextWorkspace = await window.openHttpNative.deleteRequest(workspace.path, request);
     setWorkspace(nextWorkspace);
     setContextMenu(null);
@@ -787,6 +1282,7 @@ function App() {
     const movedDraft = normalizeDraftForEdit(movedRequest);
     const movedSnapshot = requestSnapshot(movedDraft);
     moveSocketSession(oldId, nextId);
+    moveHttpRequestRuntime(oldId, nextId);
     setOpenTabs((current) =>
       current.map((tab) => {
         if (tab.kind !== "request" || tab.id !== oldId) {
@@ -860,6 +1356,7 @@ function App() {
       })
       .map((tab) => tab.id);
     closeSockets(removedTabIds);
+    abortHttpRequests(removedTabIds);
 
     const nextWorkspace = await window.openHttpNative.deleteFolder(workspace.path, folder);
     setWorkspace(nextWorkspace);
@@ -886,28 +1383,19 @@ function App() {
       return;
     }
 
-    const id = environmentKey(folder);
-    const environmentForEdit = normalizeEnvironmentForEdit(environment);
+    const nextTab = createEnvironmentWorkbenchTab(environment);
     setSelectedFolder(folder);
     setActivePage("client");
-    setActiveTabId(id);
+    setActiveTabId(nextTab.id);
     setActiveView({ type: "environment", folder });
 
     setOpenTabs((current) => {
-      const existing = current.find((tab) => tab.id === id);
+      const existing = current.find((tab) => tab.id === nextTab.id);
       if (existing) {
         return current;
       }
 
-      return [
-        ...current,
-        {
-          kind: "environment",
-          id,
-          environment: environmentForEdit,
-          savedSnapshot: environmentSnapshot(environmentForEdit)
-        }
-      ];
+      return [...current, nextTab];
     });
   };
 
@@ -1052,35 +1540,73 @@ function App() {
   };
 
   const sendHttp = async () => {
-    if (isSending) {
-      httpAbortControllerRef.current?.abort();
-      return;
-    }
-
     if (!activeRequestTab || !draft || draft.type !== "http") {
       return;
     }
 
     const sendingTabId = activeRequestTab.id;
+    if (httpAbortControllersRef.current.has(sendingTabId)) {
+      abortHttpRequests([sendingTabId]);
+      return;
+    }
+
     const startedAt = performance.now();
     const abortController = new AbortController();
     const requestController: HttpRequestController = {
       abort: () => abortController.abort()
     };
-    httpAbortControllerRef.current = requestController;
-    setIsSending(true);
-    setSendStartedAt(startedAt);
-    setUploadProgress(null);
+    const currentSendingTabId = () => httpRequestTabIdsRef.current.get(requestController) || null;
+    const isCurrentHttpRequest = () => {
+      const currentTabId = currentSendingTabId();
+      return Boolean(currentTabId && httpAbortControllersRef.current.get(currentTabId) === requestController);
+    };
+    const updateCurrentSendingTab = (recipe: (tab: Extract<WorkbenchTab, { kind: "request" }>) => Extract<WorkbenchTab, { kind: "request" }>) => {
+      const currentTabId = currentSendingTabId();
+      if (currentTabId && isCurrentHttpRequest()) {
+        updateTabById(currentTabId, recipe);
+      }
+    };
+
+    httpAbortControllersRef.current.set(sendingTabId, requestController);
+    httpRequestTabIdsRef.current.set(requestController, sendingTabId);
+    setHttpRequestRuntimes((current) => ({
+      ...current,
+      [sendingTabId]: {
+        isSending: true,
+        startedAt,
+        uploadProgress: null
+      }
+    }));
     updateTabById(sendingTabId, (tab) => ({ ...tab, requestError: null, response: null }));
 
     const updateUploadProgress = (loaded: number, total: number | null) => {
+      const currentTabId = currentSendingTabId();
+      if (!currentTabId || !isCurrentHttpRequest()) {
+        return;
+      }
+
       const elapsedSeconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
-      setUploadProgress({
-        tabId: sendingTabId,
+      const nextUploadProgress: UploadProgressState = {
+        tabId: currentTabId,
         loaded,
         total,
         percent: total && total > 0 ? (loaded / total) * 100 : null,
         bytesPerSecond: loaded / elapsedSeconds
+      };
+
+      setHttpRequestRuntimes((current) => {
+        const runtime = current[currentTabId];
+        if (!runtime || !isCurrentHttpRequest()) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [currentTabId]: {
+            ...runtime,
+            uploadProgress: nextUploadProgress
+          }
+        };
       });
     };
 
@@ -1190,7 +1716,7 @@ function App() {
             };
 
             responseInitialized = true;
-            updateTabById(sendingTabId, (tab) => ({ ...tab, response: initialResponse }));
+            updateCurrentSendingTab((tab) => ({ ...tab, response: initialResponse }));
           };
 
           xhr.open(draft.method, url, true);
@@ -1226,7 +1752,7 @@ function App() {
               const bodyKind = responseBodyKind(contentType);
               const finalBlob = responseBlobFromXhr(xhr, contentType);
               const finalBody = bodyKind === "text" ? prettyBody(await decodeResponseBlob(finalBlob, contentType), contentType) : "";
-              updateTabById(sendingTabId, (tab) => ({
+              updateCurrentSendingTab((tab) => ({
                 ...tab,
                 response: tab.response
                   ? {
@@ -1293,7 +1819,7 @@ function App() {
           contentType
         };
 
-        updateTabById(sendingTabId, (tab) => ({ ...tab, response: initialResponse }));
+        updateCurrentSendingTab((tab) => ({ ...tab, response: initialResponse }));
 
         const reader = result.body?.getReader();
         const chunks: BlobPart[] = [];
@@ -1317,7 +1843,7 @@ function App() {
 
             if (textDecoder) {
               rawText += textDecoder.decode(chunk, { stream: true });
-              updateTabById(sendingTabId, (tab) => ({
+              updateCurrentSendingTab((tab) => ({
                 ...tab,
                 response: tab.response
                   ? {
@@ -1330,7 +1856,7 @@ function App() {
                   : tab.response
               }));
             } else {
-              updateTabById(sendingTabId, (tab) => ({
+              updateCurrentSendingTab((tab) => ({
                 ...tab,
                 response: tab.response
                   ? {
@@ -1350,7 +1876,7 @@ function App() {
 
         const finalBlob = new Blob(chunks, { type: contentType || "application/octet-stream" });
         const finalBody = textDecoder ? prettyBody(rawText, contentType) : "";
-        updateTabById(sendingTabId, (tab) => ({
+        updateCurrentSendingTab((tab) => ({
           ...tab,
           response: tab.response
             ? {
@@ -1365,17 +1891,28 @@ function App() {
       }
     } catch (error) {
       const isAbortError = error instanceof Error && error.name === "AbortError";
-      updateTabById(sendingTabId, (tab) => ({
-        ...tab,
-        requestError: isAbortError ? "Request canceled" : error instanceof Error ? error.message : String(error)
-      }));
-    } finally {
-      if (httpAbortControllerRef.current === requestController) {
-        httpAbortControllerRef.current = null;
+      const currentTabId = currentSendingTabId();
+      if (currentTabId && isCurrentHttpRequest()) {
+        updateTabById(currentTabId, (tab) => ({
+          ...tab,
+          requestError: isAbortError ? "Request canceled" : error instanceof Error ? error.message : String(error)
+        }));
       }
-      setIsSending(false);
-      setSendStartedAt(null);
-      setUploadProgress(null);
+    } finally {
+      const currentTabId = currentSendingTabId();
+      if (currentTabId && isCurrentHttpRequest()) {
+        httpAbortControllersRef.current.delete(currentTabId);
+        httpRequestTabIdsRef.current.delete(requestController);
+        setHttpRequestRuntimes((current) => {
+          if (!current[currentTabId]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[currentTabId];
+          return next;
+        });
+      }
     }
   };
 
@@ -1622,73 +2159,74 @@ function App() {
         </div>
       </header>
 
-      {activePage === "client" ? (
+      <div className={`app-page-view ${activePage === "client" ? "active" : ""}`} aria-hidden={activePage !== "client"}>
         <ClientPage
-          isSidebarHidden={isSidebarHidden}
-          leftWidth={leftWidth}
-          workspace={workspace}
-          folderTree={folderTree}
-          selectedFolder={selectedFolder}
-          selectedRequestId={draft ? requestKey(draft) : null}
-          selectedEnvironmentFolder={activeView.type === "environment" ? activeView.folder : null}
-          activeView={activeView}
-          activeTab={activeTab}
-          draft={draft}
-          activeEnvironment={activeEnvironment}
-          expandedFolders={expandedFolders}
-          openTabs={openTabs}
-          activeTabId={activeTabId}
-          dirtyTabIds={dirtyTabIds}
-          environmentDraft={environmentDraft}
-          isDirty={isDirty}
-          saveSuccess={saveSuccess}
-          isSending={isSending}
-          sendStartedAt={sendStartedAt}
-          uploadProgress={activeTab?.kind === "request" && uploadProgress?.tabId === activeTab.id ? uploadProgress : null}
-          wsStatus={wsStatus}
-          wsMessages={wsMessages}
-          wsOutbound={wsOutbound}
-          formFiles={formFiles}
-          filter={filter}
-          draggingRef={draggingRef}
-          setFilter={setFilter}
-          setSelectedFolder={setSelectedFolder}
-          setActivePage={setActivePage}
-          setActiveView={setActiveView}
-          setActiveTabId={setActiveTabId}
-          setSaveSuccess={setSaveSuccess}
-          setFormFiles={setFormFiles}
-          setWsOutbound={setActiveWsOutbound}
-          openWorkspace={openWorkspace}
-          refreshWorkspace={refreshWorkspace}
-          createRequest={createRequest}
-          toggleFolder={toggleFolder}
-          openRequestTab={openRequestTab}
-          showEnvironment={showEnvironment}
-          openContextMenu={openContextMenu}
-          duplicateRequest={duplicateRequest}
-          deleteRequest={deleteRequest}
-          moveRequest={moveRequest}
-          closeTab={closeTab}
-          reorderTabs={reorderTabs}
-          addEnvironmentVariable={addEnvironmentVariable}
-          updateEnvironmentVariable={updateEnvironmentVariable}
-          removeEnvironmentVariable={removeEnvironmentVariable}
-          saveEnvironment={saveEnvironment}
-          updateActiveDraft={updateActiveDraft}
-          updateActiveTab={updateActiveTab}
-          updateHttpDraft={updateHttpDraft}
-          updateWebSocketDraft={updateWebSocketDraft}
-          saveActiveDraft={saveActiveDraft}
-          sendHttp={sendHttp}
-          downloadResponse={downloadResponse}
-          connectWebSocket={connectWebSocket}
-          disconnectWebSocket={disconnectWebSocket}
-          sendWebSocketMessage={sendWebSocketMessage}
-        />
-      ) : (
+            isSidebarHidden={isSidebarHidden}
+            leftWidth={leftWidth}
+            workspace={workspace}
+            folderTree={folderTree}
+            selectedFolder={selectedFolder}
+            selectedRequestId={draft ? requestKey(draft) : null}
+            selectedEnvironmentFolder={activeView.type === "environment" ? activeView.folder : null}
+            activeView={activeView}
+            activeTab={activeTab}
+            draft={draft}
+            activeEnvironment={activeEnvironment}
+            expandedFolders={expandedFolders}
+            openTabs={openTabs}
+            activeTabId={activeTabId}
+            dirtyTabIds={dirtyTabIds}
+            environmentDraft={environmentDraft}
+            isDirty={isDirty}
+            saveSuccess={saveSuccess}
+            isSending={isActiveHttpSending}
+            sendStartedAt={activeHttpStartedAt}
+            uploadProgress={activeHttpUploadProgress}
+            wsStatus={wsStatus}
+            wsMessages={wsMessages}
+            wsOutbound={wsOutbound}
+            formFiles={formFiles}
+            filter={filter}
+            draggingRef={draggingRef}
+            setFilter={setFilter}
+            setSelectedFolder={setSelectedFolder}
+            setActivePage={setActivePage}
+            setActiveView={setActiveView}
+            setActiveTabId={setActiveTabId}
+            setSaveSuccess={setSaveSuccess}
+            setFormFiles={setFormFiles}
+            setWsOutbound={setActiveWsOutbound}
+            openWorkspace={openWorkspace}
+            refreshWorkspace={refreshWorkspace}
+            createRequest={createRequest}
+            toggleFolder={toggleFolder}
+            openRequestTab={openRequestTab}
+            showEnvironment={showEnvironment}
+            openContextMenu={openContextMenu}
+            duplicateRequest={duplicateRequest}
+            deleteRequest={deleteRequest}
+            moveRequest={moveRequest}
+            closeTab={closeTab}
+            reorderTabs={reorderTabs}
+            addEnvironmentVariable={addEnvironmentVariable}
+            updateEnvironmentVariable={updateEnvironmentVariable}
+            removeEnvironmentVariable={removeEnvironmentVariable}
+            saveEnvironment={saveEnvironment}
+            updateActiveDraft={updateActiveDraft}
+            updateActiveTab={updateActiveTab}
+            updateHttpDraft={updateHttpDraft}
+            updateWebSocketDraft={updateWebSocketDraft}
+            saveActiveDraft={saveActiveDraft}
+            sendHttp={sendHttp}
+            downloadResponse={downloadResponse}
+            connectWebSocket={connectWebSocket}
+            disconnectWebSocket={disconnectWebSocket}
+            sendWebSocketMessage={sendWebSocketMessage}
+          />
+      </div>
+      <div className={`app-page-view ${activePage === "tools" ? "active" : ""}`} aria-hidden={activePage !== "tools"}>
         <ToolsPage activeTool={activeTool} onSelectTool={setActiveTool} isSidebarHidden={isSidebarHidden} />
-      )}
+      </div>
 
       {contextMenu && (
         <TreeContextMenu
@@ -1696,6 +2234,7 @@ function App() {
           refObject={contextMenuRef}
           onCreateRequest={createRequest}
           onCreateFolder={createChildFolder}
+          onRenameFolder={renameFolder}
           onOpenFolderLocation={openFolderLocation}
           onOpenRequestLocation={openRequestLocation}
           onDuplicateRequest={duplicateRequest}
@@ -1719,6 +2258,18 @@ function App() {
           parentLabel={createFolderDialog.parentFolder || workspace?.name || "Workspace"}
           onCancel={() => setCreateFolderDialog(null)}
           onCreate={confirmCreateFolder}
+        />
+      )}
+
+      {renameFolderDialog && (
+        <CreateFolderDialog
+          parentLabel={renameFolderDialog.folder}
+          initialName={renameFolderDialog.folder.split("/").pop() || renameFolderDialog.folder}
+          title="Rename Folder"
+          actionLabel="Rename"
+          actionIcon="rename"
+          onCancel={() => setRenameFolderDialog(null)}
+          onCreate={confirmRenameFolder}
         />
       )}
 

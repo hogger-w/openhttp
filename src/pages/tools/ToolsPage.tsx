@@ -45,12 +45,24 @@ export function ToolsPage({
         </aside>
       )}
       <section className="tools-workbench">
-        {activeTool === "base64" && <Base64Tool />}
-        {activeTool === "json-format" && <JsonFormatTool />}
-        {activeTool === "cron" && <CronTool />}
-        {activeTool === "regex" && <RegexTool />}
-        {activeTool === "url-codec" && <UrlCodecTool />}
-        {activeTool === "timestamp" && <TimestampTool />}
+        <div className={`tool-view ${activeTool === "base64" ? "active" : ""}`}>
+          <Base64Tool />
+        </div>
+        <div className={`tool-view ${activeTool === "json-format" ? "active" : ""}`}>
+          <JsonFormatTool />
+        </div>
+        <div className={`tool-view ${activeTool === "cron" ? "active" : ""}`}>
+          <CronTool />
+        </div>
+        <div className={`tool-view ${activeTool === "regex" ? "active" : ""}`}>
+          <RegexTool />
+        </div>
+        <div className={`tool-view ${activeTool === "url-codec" ? "active" : ""}`}>
+          <UrlCodecTool />
+        </div>
+        <div className={`tool-view ${activeTool === "timestamp" ? "active" : ""}`}>
+          <TimestampTool />
+        </div>
       </section>
     </main>
   );
