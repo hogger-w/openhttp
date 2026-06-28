@@ -84,12 +84,19 @@
 .tool-view {
   display: none;
   flex: 1;
+  width: 100%;
   min-width: 0;
   min-height: 0;
 }
 
 .tool-view.active {
   display: flex;
+}
+
+.tool-view > .tool-panel {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
 }
 
 .tool-panel header {
